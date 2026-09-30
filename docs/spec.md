@@ -1,126 +1,154 @@
-# covr — design spec (covr.sidebar 0.3, as implemented)
+# covr: design and behaviour
 
-Minimal, attention-first herdr sidebar. Every space and every agent is one line; state is carried by glyph shape and stoplight colour; text gets a second line only when it changes a decision. Implemented as a herdr plugin (`plugin/`) — a Python daemon that pushes display tokens, one `agent.view.set` view, and a sidebar layout block in herdr's `config.toml` that is installed once and never rewritten by options.
+This is how covr (plugin id `covr.sidebar`, version 0.3) draws herdr's sidebar and how its daemon behaves. The README covers installation and a quick tour.
 
-## 1. Agents section
+## Agents
 
-### Row anatomy
+<img src="images/covr-light.png" width="330" align="right" alt="covr sidebar">
+
+### Rows
+
 ```
-× api-wt-auth              2m      first row: glyph · label [· tag] [· kind] … age (pinned right)
-  ↳ run: rm -rf build/?            second row, blocked only: why it waits (red, bold)
-✓ herdr                    4m
-  ↳ fix tab rename bug             second row, done-unseen only: what finished (teal)
-☾ web · docs refresh      39m      stale idle: gray moon, whole row dim
+× api                        2m   glyph · label [· tab] [· tag] [· kind]      age
+  ↳ Bash(npm run migrate:up)      blocked only: what it is asking (red)
+✓ web                       <1m
+  ↳ Fix checkout redirect         finished and not yet seen: the task (teal)
+☾ docs                     2h1m   idle past stale_after: the whole row dims
 ```
-- The first row is ONE composed token (`$head`): glyph + label + optional parts, padded with U+2800 (braille blank — not trimmed by herdr) so the age sits flush right, one column before the divider. The daemon reads the live sidebar width (the user's dragged width from herdr's client prefs, else `ui.sidebar_width`) every tick.
-- Consequence: the whole first row takes the state colour (herdr has one style per token, and separate tokens always join with ` · `).
-- Long text truncates at a word boundary with `…`; the age is never truncated.
 
-### States (stoplight, catppuccin-latte)
-| state | glyph | colour | notes |
-|---|---|---|---|
-| blocked | × | `#d20f39` red, bold | + `↳ reason` row |
-| done-unseen | ✓ | `#179299` teal (herdr's native done) | + `↳ what finished` row |
-| working | ◐ | `#c27c0e` yellow (latte yellow darkened for legibility) | |
-| idle | ○ | `#40a02b` green | |
-| idle-stale (> `stale_after`) | ☾ | `#9ca0b0` gray, dim | sinks to the bottom of the idle tier |
-| unknown | · | `#9ca0b0` | |
-| pinned (any state) | + ` ★` after the label | row colour | pinned rows lead |
+- **One token:** the first line is a single token, `$head`, holding the glyph, the label, any extra parts and the age.
+- **Right-aligned age:** herdr has no alignment, so the daemon pads the line with U+2800 (a blank that herdr does not trim) to the sidebar's current width.
+- **One colour per line:** herdr styles a whole token at once, so the whole line takes its state's colour.
+- **Truncation:** long labels are cut at a word boundary with `…`. The space name is shortened before the tab name, and the age is never cut. No token exceeds herdr's 80-character limit.
+- **Tabs:** tab names show only for tabs you renamed (`show_tab = named`); auto-numbered tabs are hidden.
+- **Look-alike rows:** when two agents in one space and tab would render the same, each gets one or two words of its task (`web · Docs refresh` / `web · Login bug`).
+- **Agent kind:** hidden by default (`show_kind`).
+- **Task titles** are herdr's `terminal_title_stripped`; Claude Code sets it to the session title.
+- **`label = task`** replaces the space name with the task title. Anything that would repeat the title is then left out (the finished line, the `all` second lines, look-alike tags, tab names). The blocked line stays.
 
-### Ordering (default, `group_by = "none"`)
-`agent.view.set` sort: **pin** (pinned first) → **attention** (blocked > done-unseen > working > idle) → **rank** (freshest first).
-- `rank` = zero-padded inverse of the time the agent ENTERED its current state. It only changes on a real state change, so rows never move between ticks (fixes the swap-and-revert flicker caused by sorting on a ticking age).
-- Ages: time in current state. For agents already running when the daemon starts, the start is taken from the newest Claude transcript in the agent's project dir that mentions its session title (mtime); after that the daemon observes transitions itself. Persisted across daemon restarts.
+### States
+
+| state | glyph | light / dark colour |
+|---|:-:|---|
+| blocked | `×` | `#d20f39` / `#f38ba8`, bold, plus the reason line |
+| finished, not seen | `✓` | `#179299` / `#94e2d5`, plus the task line |
+| working | `◐` | `#c27c0e` / `#f9e2af` |
+| idle | `○` | `#40a02b` / `#a6e3a1` |
+| idle past `stale_after` | `☾` | `#9ca0b0` / `#7f849c`, dimmed |
+| unknown | `·` | `#9ca0b0` / `#7f849c` |
+| pinned (any state) | ` ★` after the label | the state's colour |
+
+### Order
+
+The agents list uses one herdr Agent view.
+- **Sort:** pinned first, then attention (blocked > finished > working > idle), then the most recent state change.
+- **Stable ranking:** an agent's rank is set by the moment it entered its current state, so rows move only when a state changes, never as ages tick.
+- **Age source:** the age is time in the current state. For agents already running when the daemon starts, the start time comes from the newest Claude Code transcript that mentions the session title. After that, the daemon observes changes itself and remembers them across restarts.
 
 ### Grouping
-**`group_by = "project"`** (the space is the project):
-- Groups are ordered by their **highest-ranked agent** under the current sort (pin → attention → freshness); a project holding a blocked agent comes first. Pinned spaces lead all groups.
-- Within a group, agents keep the current sort.
-- The project name appears once, on the group's first agent (`✓ web · Checkout flow`); the other agents are indented two cells under it and identified by their task (`☾   docs refresh`).
-- View label: `by project`.
 
-**`group_by = "kind"`**: groups by agent kind (claude, codex, …), ordered by each group's most urgent agent; the kind label appears once on the first agent of each group and a dim `───` rule closes each group. View label: `by kind`.
+<img src="images/covr-project.png" width="330" align="right" alt="grouped by project">
 
-Mechanism for both: the daemon pushes `grp` = group index (`0001`…); view sort = `grp` → `pin` → `attention` → `rank`.
+**By project** (`group_by = project`, where each space is a project):
+- A project's rank is its most urgent agent's rank; pinned spaces lead.
+- The project name appears on the first agent only. The others are indented and labelled by their task.
+- The list header shows `by project`.
 
-### Identity without the agent kind
-- Default label = the space; the kind (`claude`) is never shown unless `show_kind` asks for it.
-- **Disambiguation**: when two agents in the same space would render identically (same visible glyph), both get a 1–2 word task tag (`☾ web · docs refresh` / `☾ web · Login bug`). Tags never cut words.
-- `label = "task"` swaps the space for the agent's task title. The title is then the row itself, so nothing repeats it: the done and `all` second rows, the look-alike tag and the tab name are left out. The blocked reason still shows.
-- Task titles come from herdr's `terminal_title_stripped` (Claude Code sets it to the session title).
+**By kind** (`group_by = kind`) groups claude, codex and so on:
+- The kind is named once per group, and a dim rule closes each group.
+- With only one kind running, neither the name nor the rule is shown.
+
+In both modes the daemon gives each agent a group number, `grp`, and the view sorts by it before everything else.
 
 ### Views
-`view = triage | needs me | here+` — none / `status in [blocked, done]` / current space + anything needing you. The Agents header shows the active label (`triage`, `by project`, `by project · needs me`, …).
 
-## 2. Spaces section
-- Row: `state_icon workspace · [!N] · branch git_status · [±] · [★]` — herdr-native glyphs and stoplight colours; `!N` (red, bold) on a parent whose worktree children hold N blocked agents (herdr's own rollup ignores children); `±` (peach) = uncommitted changes (`git status --porcelain`, every 30 s); `★` (yellow) = pinned.
-- **Sorting** (`space_sort`), applied by moving spaces with `workspace.move_block` (herdr has no Spaces sort API):
+| `view` | shows |
+|---|---|
+| `triage` | everything |
+| `needs me` | blocked and finished agents |
+| `here+` | the current space, plus anything blocked or finished elsewhere |
+
+<br clear="right">
+
+## Spaces
+
+- **Row:** herdr's own space row, plus three markers:
+  - `!N` (red) on a repo whose worktree spaces hold N blocked agents. herdr's own rollup ignores worktrees.
+  - `±` (peach) when `git status` finds uncommitted changes. This is checked every 30 s, with the repo's `core.fsmonitor` disabled and without taking git's index lock.
+  - `★` for a pinned space.
+- **Sorting** (`space_sort`). herdr has no sort setting for spaces, so the daemon moves them with `workspace.move_block`:
+
   | mode | order |
   |---|---|
-  | `manual` (default) | your own order — the daemon never moves anything unless a space is pinned |
-  | `alpha` | label, case-insensitive |
-  | `recent` | most recently focused first (the daemon records focus each tick) |
-  | `activity` | most urgent agent first (tier only, manual order breaks ties — moves only on tier changes) |
-  Pinned spaces always lead. Worktree children always move with their parent. Your manual order is snapshotted before the first reorder and restored when you switch back to `manual` (verified round-trip).
-- Space numbers (`prefix+1..9`) follow the displayed order, so non-manual sorts renumber spaces.
+  | `manual` (default) | yours; nothing moves unless you pin a space |
+  | `alpha` | by name |
+  | `recent` | most recently focused first |
+  | `activity` | by most urgent agent; your order breaks ties |
 
-## 3. Pinning
-- `pin-agent` pins/unpins the focused agent (pane); `pin-space` pins/unpins the current space. Stored in `~/.local/state/herdr/plugins/covr.sidebar/pins.json`; stale pane ids are dropped automatically.
-- Pinned agents lead the Agents list (within their group when grouped); pinned spaces lead the Spaces list and the project groups.
+  - Pinned spaces lead, and worktree spaces stay under their repo.
+  - Your manual order is saved before the first reorder and restored when you switch back.
+  - Space numbers (`prefix+1..9`) follow the displayed order.
+  - If something keeps moving spaces back (3 re-applied orders within 60 s), sorting pauses for 5 minutes, with one notification.
 
-## 4. Options
-File: `~/.config/herdr/plugins/config/covr.sidebar/config.toml` (actions rewrite it; the daemon picks changes up within one tick).
-| option | values (default **bold**) |
+## Pinning
+
+`pin-agent` pins the focused agent and `pin-space` pins the current space. Pinned items lead their list, or their group when grouped. Pins are stored in the plugin's state directory and shared by all herdr sessions. Pins for closed panes are dropped.
+
+## Options
+
+Options are stored in `$(herdr plugin config-dir covr.sidebar)/config.toml`. The settings popup and actions write this file, and the daemon reads it every tick.
+- **Invalid values:** `set` refuses them. In a hand-edited file they are ignored, with one log line and one notification each.
+- **Old Pythons:** before Python 3.11 (no `tomllib`), the file is read by a small built-in parser.
+
+| option | values (default first) |
 |---|---|
-| `group_by` | **none** · project · kind |
-| `space_sort` | **manual** · alpha · recent · activity |
-| `label` | **space** · task |
-| `show_tab` | **named** (only tabs you renamed; auto-numbered hidden) · always · never — shown as `space · tab`; when a row is too long the space name is shortened first |
-| `show_kind` | **never** · auto (only when >1 kind is live) · always |
-| `show_task` | **attention** (blocked reason + done summary) · all · never |
-| `disambiguate` | **true** · false |
-| `stale_after` | **30m** (1m–30d, e.g. 45m, 2h) |
-| `view` | **triage** · needs me · here+ |
-| `tick_seconds` | **5** |
-| `layout` | **auto** (light themes get latte colours, others mocha) · light · dark. Used by `install-layout`. |
+| `group_by` | `none` · `project` · `kind` |
+| `space_sort` | `manual` · `alpha` · `recent` · `activity` |
+| `view` | `triage` · `needs me` · `here+` |
+| `label` | `space` · `task` |
+| `show_tab` | `named` · `always` · `never` |
+| `show_kind` | `never` · `auto` (only while more than one kind runs) · `always` |
+| `show_task` | `attention` (blocked reason and finished task) · `all` · `never` |
+| `disambiguate` | `true` · `false` |
+| `stale_after` | `30m`; any duration from `1m` to `30d` |
+| `tick_seconds` | `5`; from 2 to 60 |
+| `layout` | `auto` · `light` · `dark` (used by `install-layout`) |
 
-## 5. Keys (in herdr `config.toml`, `# >>> covr.sidebar keys` block)
-| key | action |
-|---|---|
-| `prefix+comma` | **settings popup** (the `covr.sidebar.settings` action): every option, ←/→ to change it live, `s` to start or stop the daemon |
-| `prefix+a` | cycle view |
-| `prefix+o` | cycle grouping (none → project → kind) |
-| `prefix+s` | cycle space sort |
-| `prefix+m` | pin / unpin focused agent |
-| `prefix+y` | pin / unpin current space |
-| `prefix+i` | cycle show-kind |
-| `prefix+t` | toggle label space / task |
+## Actions
 
-## 6. Implementation
-- `plugin/herdr-plugin.toml`:
-  - `[[startup]]` runs `covrd.py startup`. It starts the session's daemon, or, if one survived a server restart or live handoff, makes it re-push everything.
-  - `[[events]]` (agent status/detected, pane closed, workspace created, worktree opened) poke the daemon.
-  - Actions: the ones above plus `start`, `stop`, `settings`, `install-layout` and `uninstall-layout`. The settings popup is a `[[panes]]` popup entrypoint.
-- `plugin/bin/covrd.py` is the daemon. Every tick, or when poked, it reads `agent.list` and `workspace.list` over the socket, diffs the tokens, pushes only the changes with `herdr pane|workspace report-metadata --source covr`, sets the view, and moves spaces per `space_sort`. Its lifecycle:
-  - **One daemon per herdr session.** Its state lives in `$HERDR_PLUGIN_STATE_DIR/s/<hash of the socket>/`. An `flock` held for the daemon's lifetime makes concurrent spawns safe. Pins are shared by all sessions.
-  - **Resync.** If herdr no longer shows tokens the daemon pushed (after a server restart), it re-pushes every token and the view.
-  - **Exit.** It exits after 60 s without a reachable socket, and it clears its tokens and exits once the plugin is disabled or unlinked.
-  - **Options** are read without `tomllib` on Python older than 3.11. Invalid values are refused by `set`; in a hand-edited file they are ignored, with one log line and one toast each, and the defaults are used.
-  - **Hooks:** besides agent and pane events, renames, focus changes, closes and reorders poke the daemon. Bursts coalesce into at most one recompute per 0.5 s.
-  - **Sidebar width** is read from *this* session's client prefs (`client-shell/local-<fnv1a64 of the session's herdr-client.sock>.json`), else `ui.sidebar_width`, else 26.
-  - **Reports carry `--seq`** (strictly increasing ms, persisted), so a late write can't overtake `stop`'s clear. If herdr keeps rejecting them, the daemon falls back to unsequenced reports.
-  - **Every token is at most 80 characters** (herdr's cap). Long text is shortened with `…`.
-  - **Space sorting backs off:** re-applying the same order 3 times within 60 s (someone keeps moving spaces back) pauses sorting for 5 minutes.
-  - **State hygiene:** the transcript cache stores hashed keys only, and every cache is pruned to live panes and workspaces. `covrd.log` rotates at 256 KB, keeping one old log.
-- `plugin/bin/layout.py` and `plugin/layouts/{latte,mocha}.toml`: the sidebar block, managed between the `# >>> covr.sidebar layout` and `# <<< covr.sidebar` markers.
-  - Install is idempotent, and uninstall removes exactly what install added.
-  - A config that would define our tables twice is refused, and nothing is written.
-  - If `server reload-config` fails, the old file is restored.
-- `tests/e2e/run.sh`: the lifecycle suite, run against an isolated herdr.
+`settings` opens the popup. The others:
+- `cycle-view`, `toggle-group`, `cycle-kind`, `toggle-label` and `cycle-space-sort` step through an option.
+- `pin-agent` and `pin-space` pin and unpin.
+- `start` and `stop` control the daemon.
+- `install-layout` and `uninstall-layout` manage the layout block.
 
-## 7. Known limits
-- If the daemon stops, agent rows are empty (their text is plugin tokens). `herdr plugin action invoke covr.sidebar.start` or a herdr restart brings it back.
-- The first row is single-colour (herdr cannot style part of a token).
-- Right-pinning depends on the width the daemon reads; a drag is picked up within one tick.
-- Non-manual space sorts physically reorder (and renumber) spaces.
-- The Spaces/Agents split is user-owned (drag once).
+Bind any of them in herdr's `config.toml` as `type = "plugin_action"`, `command = "covr.sidebar.<action>"`.
+
+## Daemon
+
+`plugin/bin/covrd.py` is a Python standard-library daemon, one per herdr session, keyed by the session's socket.
+
+- **Updates:** on every tick (5 s), and immediately when a hook fires. The hooks are agent status and detection, pane focus and close, workspace create, close, rename, focus and reorder, tab rename, and worktree open. Bursts are merged into at most one update per 0.5 s, and a hook costs about 15 ms (`bin/poke.py`).
+- **Diffing:** it reads `agent.list`, `workspace.list` and `tab.list`, and sends only changed tokens (`report-metadata --source covr --seq …`).
+- **Sequencing:** reports carry a strictly increasing `--seq`, so a late write can't undo `stop`. If herdr keeps rejecting the numbers, the daemon switches to plain reports.
+- **Recovery:** when herdr stops showing its tokens (a restart or live handoff), it sends all of them and the view again. The `[[startup]]` hook triggers the same resync.
+- **Exit:** it exits after 60 s without herdr, and it clears its tokens and exits when the plugin is disabled or unlinked.
+- **One daemon per session:** a lock held for the daemon's lifetime keeps concurrent starts safe.
+- **Code updates:** it restarts itself when its code changes on disk.
+- **Sidebar width:** read from this session's herdr client preferences (the width you dragged to), else `ui.sidebar_width`, else 26.
+- **State:** stored under the plugin's state directory, in `s/<session hash>/`. New files are readable only by you. Cached transcript lookups are stored as hashes and pruned to live panes, and the log rotates at 256 KB.
+
+`plugin/bin/layout.py` manages the block between `# >>> covr.sidebar layout` and `# <<< covr.sidebar` in herdr's `config.toml`:
+- **Idempotent:** installing twice changes nothing.
+- **Clean undo:** uninstalling removes exactly what install added.
+- **Conflicts:** it refuses a config that would define the same tables twice.
+- **Rollback:** it restores the old file if `herdr server reload-config` fails.
+- **Older blocks:** a block written by an older covr version is recognised.
+
+## Known limits
+
+- **No daemon, no rows:** if the daemon is not running, agent rows are empty, because their text comes from the daemon's tokens. `start`, or a herdr restart, brings it back.
+- **One colour per line**, as herdr can't style part of a token.
+- **Resizing:** after you drag the sidebar wider or narrower, alignment catches up within one tick.
+- **Sorting moves spaces:** any `space_sort` other than `manual` really moves spaces, which renumbers them.
+- **The split** between Spaces and Agents is herdr's; drag it once.

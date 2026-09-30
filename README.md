@@ -6,73 +6,50 @@
 ![platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macOS-555)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-covr is a minimal, attention-first Spaces/Agents sidebar for [herdr](https://herdr.dev). Every agent is one line, state is carried by glyph shape and stoplight colour, and a second line appears only when it changes a decision (why it's blocked, what just finished).
+A compact Spaces/Agents sidebar for [herdr](https://herdr.dev). Each agent takes one line, sorted by what needs you. A second line appears only when an agent is blocked (why) or has just finished (what).
 
-```
-× api · auth-fix           2m
-  ↳ run: rm -rf build/?
-✓ herdr                    4m
-  ↳ fix tab rename bug
-◐ web · checkout          12m
-○ infra                    1h
-☾ web · docs refresh      39m
-```
+| herdr's default sidebar | with covr |
+|:---:|:---:|
+| <img src="docs/images/herdr-default.png" width="330" alt="herdr's default sidebar: six of nine agents fit, two lines each, no reasons"> | <img src="docs/images/covr-light.png" width="330" alt="covr: all nine agents, blocked and finished first, with the reason and the finished task on a second line"> |
+| 6 of 9 agents fit | all 9, with why `api` is blocked and what `web` finished |
 
-| state | glyph |
-|---|---|
-| blocked | `×` + reason |
-| done, unseen | `✓` + what finished |
-| working | `◐` |
-| idle | `○` |
-| idle longer than `stale_after` | `☾` (dimmed) |
+Both screenshots show the same session, captured headless from the test sandbox (`tools/screenshots/`).
 
-Features: attention-first sorting that doesn't flicker, the age pinned to the right edge, optional grouping by project or agent kind, sorting for Spaces (manual, alpha, recent, activity), pinned agents and spaces, and a settings popup.
+## Reading a row
 
-> **Status: early (0.3).** CI runs the full suite on Linux and macOS. The lifecycle is covered by an end-to-end suite (`tests/e2e/run.sh`): herdr restarts, a server that goes away, several named sessions, disabling the plugin, the settings popup, and layout install/uninstall. Known limits are in [docs/spec.md](docs/spec.md#7-known-limits).
+| glyph | state | second line |
+|:-:|---|---|
+| `×` | blocked, waiting for you | what it is asking, taken from the screen |
+| `✓` | finished, not looked at yet | the task it finished |
+| `◐` | working | — |
+| `○` | idle | — |
+| `☾` | idle for longer than `stale_after` (30 min), dimmed | — |
 
-## Requirements
-
-- herdr 0.9.0 or later (the e2e suite passes on 0.9.0, 0.9.1 and 0.9.3)
-- Python 3.8 or later, standard library only (the e2e suite also runs the plugin under 3.8)
-- Linux or macOS
+- **Order:** blocked, then finished, then working, then idle. Within a state, the most recent change comes first.
+- **Stable positions:** rows move only when an agent's state changes, never because an age ticked over.
+- **Age:** time in the current state, on the right.
+- **Label:** the space name, plus the tab name if you renamed the tab (`infra · plan`). When two rows would look the same, both get a word or two of their task.
+- **Spaces:** keep herdr's own rows, plus `±` for uncommitted changes, `!N` on a repo whose worktrees hold N blocked agents, and `★` for a pinned space.
 
 ## Install
 
+Needs herdr 0.9.0+, Python 3.8+ (standard library only), Linux or macOS.
+
 ```sh
 herdr plugin install evanbryant/herdr-covr/plugin
-```
-
-Then install the sidebar layout:
-
-```sh
 herdr plugin action invoke covr.sidebar.install-layout
 ```
 
-This adds one marked block to herdr's `config.toml` and reloads it. The colours are picked from your `[theme] name`: catppuccin-latte colours for light themes, mocha for everything else. Set `layout = "light"` or `"dark"` in the plugin options to override that. The action refuses to write anything if you already define `[ui.sidebar.spaces]` or `[ui.sidebar.agents]` yourself. `uninstall-layout` removes the block again. Agent rows are rendered from the plugin's tokens, so they stay empty while the daemon is stopped.
+`install-layout` adds one marked block to herdr's `config.toml` and reloads it:
+- **Colours** follow your `[theme] name`: latte colours for light themes, mocha for the rest. Set `layout` to `light` or `dark` to override.
+- **Conflicts:** if you already define `[ui.sidebar.spaces]` or `[ui.sidebar.agents]`, it writes nothing and says why.
+- **Undo:** `uninstall-layout` removes the block, byte for byte.
 
-## Keys
+<img src="docs/images/covr-dark.png" width="330" alt="covr on a dark (catppuccin-mocha) theme">
 
-Add these to `config.toml`. The key choices are suggestions.
+## Settings
 
-```toml
-[[keys.command]]
-key = "prefix+a"
-type = "plugin_action"
-command = "covr.sidebar.cycle-view"
-description = "covr: cycle view"
-
-[[keys.command]]
-key = "prefix+o"
-type = "plugin_action"
-command = "covr.sidebar.toggle-group"
-description = "covr: cycle grouping"
-
-[[keys.command]]
-key = "prefix+m"
-type = "plugin_action"
-command = "covr.sidebar.pin-agent"
-description = "covr: pin agent"
-```
+Bind the settings popup to a key in `config.toml`:
 
 ```toml
 [[keys.command]]
@@ -82,25 +59,52 @@ command = "covr.sidebar.settings"
 description = "covr: settings"
 ```
 
-All actions: `settings`, `cycle-view`, `toggle-group`, `cycle-kind`, `toggle-label`, `cycle-space-sort`, `pin-agent`, `pin-space`, `start`, `stop`, `install-layout`, `uninstall-layout` (list them with `herdr plugin action list --plugin covr.sidebar`).
+<img src="docs/images/settings.png" alt="the covr settings popup over a herdr session">
 
-## Options
+↑/↓ picks an option and ←/→ changes it; the sidebar updates straight away. `s` starts or stops the daemon.
 
-Options are stored in `$(herdr plugin config-dir covr.sidebar)/config.toml`. Actions and the settings popup edit this file, and the daemon picks up changes within one tick. See [the spec](docs/spec.md#4-options) for every option.
+Every option is also an action you can bind: `cycle-view`, `toggle-group`, `cycle-kind`, `toggle-label`, `cycle-space-sort`, `pin-agent`, `pin-space`, `start`, `stop`, `install-layout`, `uninstall-layout`. `herdr plugin action list --plugin covr.sidebar` lists them.
 
-## Privacy note
+## Grouping and sorting
 
-The daemon reads the visible text of blocked panes to show why they're waiting. For agents that were already running when it started, it also estimates how long they've been in their current state by searching Claude Code transcripts under `~/.claude*/projects` for the session title and using the matching file's modification time. Settings live in the plugin config dir and runtime state in herdr's plugin state dir; nothing leaves your machine.
+`group_by = "project"` lists agents by project. Projects are ordered by their most urgent agent; the project name appears once, and the other agents in it are identified by their task. `group_by = "kind"` groups by agent type (claude, codex, …) instead.
+
+<img src="docs/images/covr-project.png" width="330" alt="covr grouped by project">
+
+Spaces keep your own order by default. `space_sort` can also be `alpha`, `recent` or `activity`, and switching back to `manual` restores your order. Pinned agents and spaces always come first.
+
+All options, with defaults and limits, are in [docs/spec.md](docs/spec.md#options). They live in `$(herdr plugin config-dir covr.sidebar)/config.toml`.
+
+## How it works
+
+herdr plugins can't draw in the sidebar. They can:
+- set short text values (tokens) that the sidebar's row layout displays
+- choose one sort and filter for the agents list
+- reorder spaces
+
+covr's daemon does all three. It runs once per herdr session, updates when herdr reports an event (and every 5 s regardless), and recovers by itself after a herdr restart. It exits when herdr goes away or when you disable the plugin. Details and known limits: [docs/spec.md](docs/spec.md).
+
+**Privacy:**
+- For a blocked agent, covr reads that pane's visible text to show what it is asking.
+- For agents already running when covr starts, it estimates the age by finding the Claude Code transcript that contains the session title (under `~/.claude*/projects`) and using the file's modification time.
+- It stores only hashes of those lookups.
+- Nothing leaves your machine.
 
 ## Tests
 
 ```sh
-python3 -m unittest discover -s tests/unit        # the daemon's logic, in well under a second
-tests/e2e/run.sh                                  # lifecycle against an isolated herdr (needs tmux)
-HERDR_BIN=/path/to/herdr PYTHON=python3.8 tests/e2e/run.sh restart sessions   # a given herdr / Python, chosen tests
+python3 -m unittest discover -s tests/unit     # the sidebar logic, under a second
+tests/e2e/run.sh                               # lifecycle against an isolated herdr (needs tmux)
+HERDR_BIN=/path/to/herdr PYTHON=python3.8 tests/e2e/run.sh restart sessions   # one herdr/Python, some tests
 ```
 
-The e2e suite never touches your own herdr: every run gets its own HOME, XDG dirs, socket and tmux server. CI runs the unit tests on Linux and macOS (Python 3.8–3.13), and the e2e suite on herdr 0.9.0, 0.9.1 and 0.9.3 (Linux) and 0.9.3 (macOS).
+Each e2e run gets its own HOME, socket and tmux server, and never touches your herdr. It covers:
+- restarts, a server that disappears, and several sessions
+- disabling the plugin, the settings popup, and layout install/uninstall
+- bad options, log rotation, and code reloads
+- a hostile repo's git config
+
+CI runs the unit tests on Linux and macOS (Python 3.8–3.13), and the e2e suite on herdr 0.9.0, 0.9.1 and 0.9.3 (Linux) and 0.9.3 (macOS).
 
 ## License
 

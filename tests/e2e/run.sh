@@ -10,7 +10,7 @@
 #        events width seq cap validate hygiene fight reload gitsafe   (default: all)
 # Linux and macOS (daemons are attributed to the sandbox by their environment: /proc on Linux, ps -E on macOS).
 set -u
-HERE=$(cd "$(dirname "$0")" && pwd)
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PLUGIN_DIR=${PLUGIN_DIR:-$(cd "$HERE/../../plugin" && pwd)}
 HERDR_BIN=${HERDR_BIN:-$(command -v herdr)}
 ROOT=${E2E_ROOT:-/tmp/covr-e2e}
@@ -376,6 +376,7 @@ print([(x.get("tokens") or {}).get("dirty") for x in json.load(sys.stdin)["resul
 }
 
 ALL="single tokens restart gone sessions disable popup notoml layout events width seq cap validate hygiene fight reload gitsafe"
+[ -n "${E2E_LIB:-}" ] && return 0   # sourced for its helpers (tools/screenshots/scene.sh)
 for t in ${*:-$ALL}; do "t_$t"; done
 [ -n "${KEEP:-}" ] || down
 [ -n "${KEEP:-}" ] || for p in $(daemons); do kill "$p" 2>/dev/null; done
