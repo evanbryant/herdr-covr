@@ -8,7 +8,7 @@
 #      PYTHON      interpreter the sandboxed herdr runs the plugin with, e.g. a python3.8 (default: python3 on PATH)
 # tests: single tokens restart gone sessions disable popup notoml layout
 #        events width seq cap validate hygiene fight reload gitsafe   (default: all)
-# Linux only (reads /proc to attribute daemons to the sandbox).
+# Linux and macOS (daemons are attributed to the sandbox by their environment: /proc on Linux, ps -E on macOS).
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 PLUGIN_DIR=${PLUGIN_DIR:-$(cd "$HERE/../../plugin" && pwd)}
@@ -39,7 +39,8 @@ sb() { "$ROOT/sb.sh" "$@"; }
 daemons() { # [socket] -> pids of covrd daemons that belong to this sandbox (and to that socket)
   local p e
   for p in $(pgrep -f 'covrd.py run'); do
-    e=$(tr '\0' '\n' < /proc/$p/environ 2>/dev/null) || continue
+    if [ -r /proc/$p/environ ]; then e=$(tr '\0' '\n' < /proc/$p/environ 2>/dev/null) || continue
+    else e=$(ps -wwE -o command= -p "$p" 2>/dev/null | tr ' ' '\n') || continue; fi
     grep -qx "HOME=$B/home" <<<"$e" || continue
     if [ -n "${1:-}" ] && ! grep -qx "HERDR_SOCKET_PATH=$1" <<<"$e"; then continue; fi
     echo "$p"
@@ -318,7 +319,7 @@ json.dump(m, open(sys.argv[1], "w"))
 EOF
   for p in $(daemons); do kill "$p"; done; until_t 5 zero
   act start; sleep 7
-  [ -f "$d/covrd.log.1" ] && [ "$(stat -c %s "$d/covrd.log")" -lt 262144 ] || why+="log not rotated; "
+  [ -f "$d/covrd.log.1" ] && [ "$(wc -c < "$d/covrd.log")" -lt 262144 ] || why+="log not rotated; "
   grep -q "secret" "$d/memo.json" && why+="raw tcache key kept; "
   grep -q "w999" "$d/memo.json" && why+="closed workspace kept in focus/manual; "
   python3 -c 'import json, sys; t = json.load(open(sys.argv[1])).get("tcache") or {}; sys.exit(0 if all(k.startswith("h:") for k in t) else 1)' "$d/memo.json" || why+="unhashed tcache keys; "
@@ -331,7 +332,7 @@ t_fight() {   # H8: dragging spaces against an active sort makes the daemon back
   local order rev
   order() { sb 'hsock workspace.list' | python3 -c 'import json, sys
 print(" ".join(w["workspace_id"] for w in sorted(json.load(sys.stdin)["result"]["workspaces"], key=lambda w: w["number"])))'; }
-  rev=$(order | tr ' ' '\n' | tac | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().split()))')
+  rev=$(order | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().split()[::-1]))')
   for _ in 1 2 3 4; do            # the user keeps putting THEIR order (reverse alpha) back
     sb "hsock workspace.move_block '{\"workspace_ids\": $rev}'" >/dev/null
     sb 'set -- $(cat ~/panes); herdr pane report-agent $3 --source e2e --agent claude --state working' >/dev/null
