@@ -1,0 +1,12 @@
+#!/usr/bin/env python3
+# hsock <method> '<params-json>'  — raw herdr socket call (newline-delimited JSON) against $XDG_CONFIG_HOME/herdr/herdr.sock
+import json, os, socket, sys
+path = os.environ.get("HERDR_SOCKET_PATH") or os.path.join(os.environ["XDG_CONFIG_HOME"], "herdr", "herdr.sock")
+s = socket.socket(socket.AF_UNIX); s.connect(path)
+s.sendall((json.dumps({"id": "hsock", "method": sys.argv[1], "params": json.loads(sys.argv[2] if len(sys.argv) > 2 else "{}")}) + "\n").encode())
+buf = b""
+while not buf.endswith(b"\n"):
+    c = s.recv(65536)
+    if not c: break
+    buf += c
+print(buf.decode().strip())

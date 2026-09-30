@@ -4,7 +4,7 @@
 Writes the plugin option file through covrd.write_option and pokes the daemon, so every
 change shows up in the sidebar immediately.
 """
-import curses, os, signal, sys
+import curses, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import covrd  # noqa: E402
@@ -34,9 +34,7 @@ HELP = {
 
 
 def poke():
-    p = covrd.alive()
-    if p:
-        os.kill(p, signal.SIGUSR1)
+    covrd.signal_daemon()
 
 
 def show(v):
@@ -56,7 +54,7 @@ def main(scr):
         scr.erase()
         h, w = scr.getmaxyx()
         scr.addnstr(0, 2, "covr — settings", w - 3, curses.A_BOLD)
-        daemon = "daemon running" if covrd.alive() else "daemon STOPPED (prefix+comma → s to start)"
+        daemon = "daemon running" if covrd.alive() else "daemon STOPPED (s to start)"
         scr.addnstr(1, 2, daemon, w - 3, curses.A_DIM)
         for i, (key, label, vals) in enumerate(ITEMS):
             y = 3 + i
@@ -90,10 +88,9 @@ def main(scr):
             poke()
         elif k == ord("s"):
             if covrd.alive():
-                os.kill(covrd.alive(), signal.SIGTERM)
+                covrd.stop()
             else:
-                sys.argv = ["covrd.py", "spawn"]
-                covrd.main()
+                covrd.spawn()
 
 
 if __name__ == "__main__":

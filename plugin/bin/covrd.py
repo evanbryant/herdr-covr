@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """covr daemon (covr.sidebar) — computes sidebar tokens from live herdr state.
 
-usage: covrd.py spawn | run | poke | stop | status | set <option> <value|cycle>
+usage: covrd.py startup | spawn | run | poke | stop | status | settings | set <option> <value|cycle> | pin agents|spaces
 
 Tokens pushed per agent pane (source "covr"): head (glyph + label, coloured by a
 glyph-prefix rule), age / age_stale, kind, tag, wait, done, task, rule, rank, kgrp.
 Per workspace: alert, dirty. Options live in $HERDR_PLUGIN_CONFIG_DIR/config.toml;
-nothing here ever rewrites herdr's own config.toml.
+the daemon never rewrites herdr's own config.toml (only the install-layout action does, see layout.py).
+
+One daemon per herdr session (socket): its pid, lock, memo and log live in
+$HERDR_PLUGIN_STATE_DIR/s/<hash of the socket path>/. Pins are shared by all sessions.
 """
-import glob, json, os, re, signal, socket, subprocess, sys, time, unicodedata
+import errno, fcntl, glob, hashlib, json, os, re, signal, socket, subprocess, sys, time, unicodedata
 
 try:
     import tomllib
@@ -22,15 +25,20 @@ CFG_DIR = os.environ.get("HERDR_PLUGIN_CONFIG_DIR") or os.path.expanduser(f"~/.c
 STATE_DIR = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.expanduser(f"~/.local/state/herdr/plugins/{PID}")
 HERDR = os.environ.get("HERDR_BIN_PATH") or "herdr"
 SOCK = os.environ.get("HERDR_SOCKET_PATH") or os.path.expanduser("~/.config/herdr/herdr.sock")
-PIDFILE, MEMO, LOG = (os.path.join(STATE_DIR, n) for n in ("covrd.pid", "memo.json", "covrd.log"))
+SESSION = hashlib.sha1(SOCK.encode()).hexdigest()[:12]
+RUN_DIR = os.path.join(STATE_DIR, "s", SESSION)
+PIDFILE, LOCK, MEMO, LOG = (os.path.join(RUN_DIR, n) for n in ("covrd.pid", "covrd.lock", "memo.json", "covrd.log"))
+LEGACY_PID, LEGACY_MEMO = os.path.join(STATE_DIR, "covrd.pid"), os.path.join(STATE_DIR, "memo.json")  # before 0.2
+HERDR_CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "herdr", "config.toml")
+GONE_AFTER = 60  # seconds without a reachable socket before the daemon decides its server is gone for good
 ZW = "​"
 
-DEFAULTS = {"label": "space", "show_kind": "never", "group_by": "none", "show_task": "attention",
+DEFAULTS = {"layout": "auto", "label": "space", "show_kind": "never", "group_by": "none", "show_task": "attention",
             "disambiguate": True, "stale_after": "1h", "view": "triage", "space_sort": "manual", "show_tab": "named", "tick_seconds": 5}
 CYCLES = {"view": ["triage", "needs me", "here+"], "group_by": ["none", "project", "kind"],
           "show_kind": ["never", "auto", "always"], "label": ["space", "task"],
           "show_task": ["attention", "all", "never"], "space_sort": ["manual", "alpha", "recent", "activity"],
-          "show_tab": ["named", "always", "never"]}
+          "show_tab": ["named", "always", "never"], "layout": ["auto", "light", "dark"]}
 GLYPH = {"blocked": "×", "done": "✓", "working": "◐", "idle": "○", "unknown": "·", "stale": "☾"}
 PRIO = {"blocked": 4, "done": 3, "working": 2, "idle": 1, "unknown": 0}
 PINS = os.path.join(STATE_DIR, "pins.json")
@@ -38,7 +46,7 @@ TOKENS = ["pin", "head", "age", "age_stale", "kind", "tag", "wait", "done", "tas
 
 
 def log(*a):
-    os.makedirs(STATE_DIR, exist_ok=True)
+    os.makedirs(RUN_DIR, exist_ok=True)
     with open(LOG, "a") as f:
         f.write(time.strftime("%H:%M:%S ") + " ".join(str(x) for x in a) + "\n")
 
@@ -76,12 +84,62 @@ def report(kind, target, set_=None, clear=()):
 
 
 # ---------------- options ----------------
+def parse_value(v):
+    """One TOML scalar as write_option writes it (or a hand edit): "str" / 'str', true/false, int.
+    Returns (value, ok); a trailing # comment after the value is ignored."""
+    v = v.strip()
+    if v[:1] in ('"', "'"):
+        q, i, out = v[0], 1, ""
+        while i < len(v) and v[i] != q:
+            if q == '"' and v[i] == "\\" and i + 1 < len(v):
+                out += {"n": "\n", "t": "\t"}.get(v[i + 1], v[i + 1])
+                i += 2
+                continue
+            out += v[i]
+            i += 1
+        return (out, True) if i < len(v) else (None, False)
+    v = v.split("#", 1)[0].strip()
+    if v in ("true", "false"):
+        return v == "true", True
+    if re.fullmatch(r"[+-]?\d+", v):
+        return int(v), True
+    return None, False
+
+
+def read_flat(path):
+    """Top-level `key = value` lines of a TOML file, for Pythons without tomllib (< 3.11).
+    Stops at the first [table] header, so only top-level keys are read."""
+    out = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                s = line.strip()
+                if s.startswith("["):
+                    break
+                if not s or s.startswith("#") or "=" not in s:
+                    continue
+                k, _, v = s.partition("=")
+                val, ok = parse_value(v)
+                if ok:
+                    out[k.strip().strip('"')] = val
+    except OSError:
+        pass
+    return out
+
+
 def options():
     o = dict(DEFAULTS)
     p = os.path.join(CFG_DIR, "config.toml")
-    if tomllib and os.path.exists(p):
-        with open(p, "rb") as f:
-            o.update(tomllib.load(f))
+    if not os.path.exists(p):
+        return o
+    try:
+        if tomllib:
+            with open(p, "rb") as f:
+                o.update(tomllib.load(f))
+        else:
+            o.update(read_flat(p))
+    except Exception as e:  # a torn or hand-broken file: keep defaults for this tick
+        log("options unreadable", repr(e))
     return o
 
 
@@ -96,12 +154,24 @@ def write_option(key, value):
         value = int(value)
     o[key] = value
     os.makedirs(CFG_DIR, exist_ok=True)
-    with open(os.path.join(CFG_DIR, "config.toml"), "w") as f:
-        f.write("# covr.sidebar (covr) options — edited by actions; the daemon picks changes up live\n")
-        for k in DEFAULTS:
-            v = o[k]
-            f.write(f"{k} = {json.dumps(v) if not isinstance(v, bool) else str(v).lower()}\n")
+    text = "# covr.sidebar (covr) options — edited by actions; the daemon picks changes up live\n"
+    for k in DEFAULTS:
+        v = o[k]
+        text += f"{k} = {json.dumps(v) if not isinstance(v, bool) else str(v).lower()}\n"
+    write_atomic(os.path.join(CFG_DIR, "config.toml"), text)
     return value
+
+
+def write_atomic(path, text):
+    """Readers never see a half-written file (the popup, actions and the daemon share these files)."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    try:
+        os.chmod(tmp, os.stat(path).st_mode & 0o777)
+    except OSError:
+        pass
+    os.replace(tmp, path)
 
 
 def load_pins():
@@ -128,7 +198,7 @@ def toggle_pin(kind):
     on = target not in p[kind]
     p[kind] = [x for x in p[kind] if x != target] + ([target] if on else [])
     os.makedirs(STATE_DIR, exist_ok=True)
-    json.dump(p, open(PINS, "w"))
+    write_atomic(PINS, json.dumps(p))
     return target, on
 
 
@@ -156,12 +226,34 @@ def sidebar_width():
         except Exception:
             pass
     if not w:
-        try:
-            cfg = tomllib.load(open(os.path.expanduser("~/.config/herdr/config.toml"), "rb"))
-            w = cfg.get("ui", {}).get("sidebar_width")
-        except Exception:
-            pass
-    return int(w or 26)
+        w = herdr_config_value("ui", "sidebar_width")
+    try:
+        return int(w or 26)
+    except (TypeError, ValueError):
+        return 26
+
+
+def herdr_config_value(table, key, text=None):
+    """One scalar from herdr's config.toml (or from `text`), e.g. ("ui", "sidebar_width") or ("theme", "name").
+    Uses tomllib when available, else a line scan of that [table]."""
+    try:
+        if text is None:
+            with open(HERDR_CONFIG, encoding="utf-8") as f:
+                text = f.read()
+        if tomllib:
+            return tomllib.loads(text).get(table, {}).get(key)
+        cur = None
+        for line in text.splitlines():
+            s = line.strip()
+            m = re.match(r"^\[(\[?)\s*([^\]]+?)\s*\]", s)
+            if m:  # [table] or [[array.of.tables]] (the latter never matches a plain table name)
+                cur = ("[]" if m.group(1) else "") + m.group(2)
+            elif cur == table and re.match(rf"^{re.escape(key)}\s*=", s):
+                val, ok = parse_value(s.split("=", 1)[1])
+                return val if ok else None
+    except Exception:
+        pass
+    return None
 
 
 def pinned_row(glyph, text, age, width):
@@ -269,6 +361,7 @@ def wait_reason(pane_id):
 # ---------------- compute ----------------
 def compute(opt, memo):
     agents = call("agent.list")["agents"]
+    memo["live"] = {a["pane_id"]: set((a.get("tokens") or {}).keys()) for a in agents}
     spaces = {w["workspace_id"]: w for w in call("workspace.list")["workspaces"]}
     try:
         tl = call("tab.list")
@@ -501,7 +594,23 @@ def view_params(opt, mode):
     return p
 
 
+def lost_tokens(memo):
+    """True when a still-live agent shows none of the tokens we pushed to it: its server restarted
+    (or handed off) and dropped every token and the view, so all of it must be pushed again.
+    (All of them, not some: herdr may drop a single value it sanitises to empty, and that must not
+    turn into a full resync every tick.)"""
+    live = memo.get("live") or {}
+    for pid, t in (memo.get("pushed") or {}).items():
+        if t and pid in live and not set(t) & live[pid]:
+            return True
+    return False
+
+
 def apply(out, wout, view, memo):
+    if memo.pop("resync", False) or lost_tokens(memo):
+        log("resync: pushing every token and the view again")
+        for k in ("pushed", "wpushed", "view"):
+            memo.pop(k, None)
     last = memo.setdefault("pushed", {})
     for pid, t in out.items():
         prev = last.get(pid, {})
@@ -531,18 +640,88 @@ def apply(out, wout, view, memo):
 
 
 # ---------------- lifecycle ----------------
-def alive():
+def lock_held():
+    """Is some process holding this session's daemon lock? (probe with a shared lock; never blocks)"""
     try:
-        pid = int(open(PIDFILE).read())
-        os.kill(pid, 0)
-        return pid
-    except Exception:
+        fd = os.open(LOCK, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    except OSError as e:
+        return e.errno in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK)
+    finally:
+        os.close(fd)
+
+
+def alive():
+    """pid of this session's daemon, or None. The lock (held for the daemon's lifetime) is the truth;
+    the pidfile only says whom to signal."""
+    if not lock_held():
         return None
+    for _ in range(20):  # the lock holder writes its pid right after locking
+        try:
+            return int(open(PIDFILE).read())
+        except (OSError, ValueError):
+            time.sleep(0.05)
+    return None
+
+
+def take_lock():
+    """Become this session's one daemon, or return None if another process already is.
+    Retries briefly so a concurrent alive() probe (a momentary shared lock) cannot make us give up."""
+    os.makedirs(RUN_DIR, exist_ok=True)
+    fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o644)
+    for _ in range(20):
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            time.sleep(0.05)
+    os.close(fd)
+    return None
+
+
+def retire_legacy():
+    """A daemon from before per-session state (global pidfile) would run beside the new one: stop it
+    once, and carry its memo over (ages, focus times, the saved manual order) to the default session."""
+    try:
+        pid = int(open(LEGACY_PID).read())
+        cmd = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+        if "covrd.py" in cmd and " run" in cmd:
+            os.kill(pid, signal.SIGTERM)
+            log("stopped pre-0.2 daemon", pid)
+    except (OSError, ValueError):
+        pass
+    try:
+        os.remove(LEGACY_PID)
+    except OSError:
+        pass
+    if os.path.exists(LEGACY_MEMO) and not os.path.exists(MEMO):
+        os.makedirs(RUN_DIR, exist_ok=True)
+        os.replace(LEGACY_MEMO, MEMO)
+
+
+def plugin_enabled():
+    """False once the user disables or unlinks the plugin (herdr does not stop our daemon for us)."""
+    for p in call("plugin.list").get("plugins", []):
+        if p.get("plugin_id") == PID:
+            return bool(p.get("enabled"))
+    return False
+
+
+def server_unreachable(e):
+    return isinstance(e, (FileNotFoundError, ConnectionRefusedError)) or \
+        (isinstance(e, OSError) and e.errno in (errno.ENOENT, errno.ECONNREFUSED))
 
 
 def run():
-    os.makedirs(STATE_DIR, exist_ok=True)
-    open(PIDFILE, "w").write(str(os.getpid()))
+    lock = take_lock()
+    if lock is None:
+        return  # another daemon already serves this session
+    write_atomic(PIDFILE, str(os.getpid()))
     memo = {}
     try:
         old = json.load(open(MEMO))
@@ -555,22 +734,96 @@ def run():
         pass
     woke = {"flag": False}
     signal.signal(signal.SIGUSR1, lambda *_: woke.update(flag=True))
+    signal.signal(signal.SIGUSR2, lambda *_: (memo.update(resync=True), woke.update(flag=True)))
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    log("started", os.getpid())
-    while True:
+    log("started", os.getpid(), "socket", SOCK)
+    down_since = None
+    try:
+        while True:
+            try:
+                if not plugin_enabled():
+                    log("plugin disabled or unlinked: clearing tokens and exiting")
+                    clear_all()
+                    return
+                opt = options()
+                apply(*compute(opt, memo), memo)
+                write_atomic(MEMO, json.dumps({k: memo.get(k) for k in ("since", "tcache", "focus", "manual", "last_sort")}))
+                down_since = None
+            except Exception as e:
+                if server_unreachable(e):
+                    down_since = down_since or time.time()
+                    if time.time() - down_since >= GONE_AFTER:
+                        log(f"server unreachable for {GONE_AFTER}s: exiting")
+                        return
+                    memo["resync"] = True  # whatever comes back up has none of our tokens
+                else:
+                    log("error", repr(e))
+                    memo.pop("view", None)
+            tick = max(2, int(options().get("tick_seconds", 5)))
+            for _ in range(tick * 10):
+                if woke["flag"]:
+                    break
+                time.sleep(0.1)
+            woke["flag"] = False
+    finally:
         try:
-            opt = options()
-            apply(*compute(opt, memo), memo)
-            json.dump({k: memo.get(k) for k in ("since", "tcache", "focus", "manual", "last_sort")}, open(MEMO, "w"))
-        except Exception as e:
-            log("error", repr(e))
-            memo.pop("view", None)
-        tick = max(2, int(options().get("tick_seconds", 5)))
-        for _ in range(tick * 10):
-            if woke["flag"]:
-                break
-            time.sleep(0.1)
-        woke["flag"] = False
+            if int(open(PIDFILE).read()) == os.getpid():
+                os.remove(PIDFILE)
+        except (OSError, ValueError):
+            pass
+        os.close(lock)  # releases the lock; the lock file itself stays (unlinking it would race a new daemon)
+
+
+def spawn():
+    """Start this session's daemon unless it runs; safe to call from many hooks at once."""
+    if alive():
+        return alive()
+    retire_legacy()
+    os.makedirs(RUN_DIR, exist_ok=True)
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "run"], start_new_session=True,
+                     stdout=open(LOG, "a"), stderr=subprocess.STDOUT, env=os.environ.copy())
+    for _ in range(30):
+        if alive():
+            break
+        time.sleep(0.1)
+    return alive()
+
+
+def signal_daemon(sig=signal.SIGUSR1):
+    p = alive()
+    if p:
+        try:
+            os.kill(p, sig)
+        except OSError:
+            pass
+    return p
+
+
+def stop():
+    p = signal_daemon(signal.SIGTERM)
+    for _ in range(50):  # wait for it to exit before clearing, so a last tick cannot re-push
+        if not lock_held():
+            break
+        time.sleep(0.1)
+    clear_all()
+    return p
+
+
+def open_settings():
+    """The settings popup is a plugin pane, so it runs with this session's plugin env."""
+    r = subprocess.run([HERDR, "plugin", "pane", "open", "--plugin", PID, "--entrypoint", "settings"],
+                       capture_output=True, text=True, timeout=10)
+    if r.returncode != 0:
+        busy = "ui_busy" in (r.stdout + r.stderr)
+        notify("close the open dialog first, then retry" if busy else (r.stderr or r.stdout).strip()[:200])
+    return r.returncode
+
+
+def notify(body):
+    try:
+        call("notification.show", {"title": "covr", "body": body})
+    except Exception:
+        pass
 
 
 def clear_all():
@@ -588,52 +841,39 @@ def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
     if cmd == "run":
         run()
-    elif cmd == "spawn":
-        if not alive():
-            os.makedirs(STATE_DIR, exist_ok=True)
-            subprocess.Popen([sys.executable, os.path.abspath(__file__), "run"], start_new_session=True,
-                             stdout=open(LOG, "a"), stderr=subprocess.STDOUT, env=os.environ.copy())
-            time.sleep(0.3)
+    elif cmd == "startup":
+        # [[startup]] also runs after a server restart / live handoff: a surviving daemon must re-push
+        # everything (the new server has none of our tokens and no view), a missing one is started
+        if not signal_daemon(signal.SIGUSR2):
+            spawn()
         print("running", alive())
+    elif cmd == "spawn":
+        print("running", spawn())
     elif cmd == "poke":
-        p = alive()
-        if p:
-            os.kill(p, signal.SIGUSR1)
-        else:
-            main_spawn()
+        if not signal_daemon():
+            spawn()
     elif cmd == "stop":
-        p = alive()
-        if p:
-            os.kill(p, signal.SIGTERM)
-        clear_all()
+        stop()
         print("stopped")
+    elif cmd == "settings":
+        sys.exit(open_settings())
     elif cmd == "pin":
         target, on = toggle_pin(sys.argv[2])
-        p = alive()
-        if p:
-            os.kill(p, signal.SIGUSR1)
-        try:
-            call("notification.show", {"title": "covr", "body": f"{'pinned' if on else 'unpinned'} {target}" if target else "nothing focused"})
-        except Exception:
-            pass
+        signal_daemon()
+        notify(f"{'pinned' if on else 'unpinned'} {target}" if target else "nothing focused")
         print(target, on)
     elif cmd == "set":
-        v = write_option(sys.argv[2], sys.argv[3])
-        p = alive()
-        if p:
-            os.kill(p, signal.SIGUSR1)
-        try:
-            call("notification.show", {"title": "covr", "body": f"{sys.argv[2]} = {v}"})
-        except Exception:
-            pass
-        print(sys.argv[2], "=", v)
+        key = sys.argv[2] if len(sys.argv) > 2 else ""
+        if key not in DEFAULTS or len(sys.argv) < 4:
+            notify(f"unknown option {key!r}")
+            sys.exit(f"usage: covrd.py set <{'|'.join(DEFAULTS)}> <value|cycle>")
+        v = write_option(key, sys.argv[3])
+        signal_daemon()
+        notify(f"{key} = {v}")
+        print(key, "=", v)
     else:
-        print("running" if alive() else "stopped", alive() or "")
-
-
-def main_spawn():
-    sys.argv = [sys.argv[0], "spawn"]
-    main()
+        p = alive()
+        print(f"running {p}" if p else "stopped", f"(session {SESSION}, socket {SOCK})")
 
 
 if __name__ == "__main__":

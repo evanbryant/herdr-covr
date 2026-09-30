@@ -82,11 +82,12 @@ File: `~/.config/herdr/plugins/config/covr.sidebar/config.toml` (actions rewrite
 | `stale_after` | **1h** |
 | `view` | **triage** · needs me · here+ |
 | `tick_seconds` | **5** |
+| `layout` | **auto** (light themes get latte colours, others mocha) · light · dark. Used by `install-layout`. |
 
 ## 5. Keys (in herdr `config.toml`, `# >>> covr.sidebar keys` block)
 | key | action |
 |---|---|
-| `prefix+comma` | **settings popup** (`plugin/bin/settings.py`): every option, ←/→ to change live, `s` start/stop daemon |
+| `prefix+comma` | **settings popup** (the `covr.sidebar.settings` action): every option, ←/→ to change it live, `s` to start or stop the daemon |
 | `prefix+a` | cycle view |
 | `prefix+o` | cycle grouping (none → project → kind) |
 | `prefix+s` | cycle space sort |
@@ -96,9 +97,20 @@ File: `~/.config/herdr/plugins/config/covr.sidebar/config.toml` (actions rewrite
 | `prefix+t` | toggle label space / task |
 
 ## 6. Implementation
-- `plugin/herdr-plugin.toml` — `[[startup]]` spawns the daemon; `[[events]]` (agent status/detected, pane closed, workspace created, worktree opened) poke it; actions above + `start` / `stop`.
-- `plugin/bin/covrd.py` — daemon: `agent.list` + `workspace.list` over the socket every tick (or when poked); diffs tokens and pushes only changes via `herdr pane|workspace report-metadata --source covr`; sets the view; moves spaces per `space_sort`.
-- `plugin/sidebar-latte.toml` — the sidebar block installed in herdr's `config.toml` (between `# >>> covr.sidebar` markers).
+- `plugin/herdr-plugin.toml`:
+  - `[[startup]]` runs `covrd.py startup`. It starts the session's daemon, or, if one survived a server restart or live handoff, makes it re-push everything.
+  - `[[events]]` (agent status/detected, pane closed, workspace created, worktree opened) poke the daemon.
+  - Actions: the ones above plus `start`, `stop`, `settings`, `install-layout` and `uninstall-layout`. The settings popup is a `[[panes]]` popup entrypoint.
+- `plugin/bin/covrd.py` is the daemon. Every tick, or when poked, it reads `agent.list` and `workspace.list` over the socket, diffs the tokens, pushes only the changes with `herdr pane|workspace report-metadata --source covr`, sets the view, and moves spaces per `space_sort`. Its lifecycle:
+  - **One daemon per herdr session.** Its state lives in `$HERDR_PLUGIN_STATE_DIR/s/<hash of the socket>/`. An `flock` held for the daemon's lifetime makes concurrent spawns safe. Pins are shared by all sessions.
+  - **Resync.** If herdr no longer shows tokens the daemon pushed (after a server restart), it re-pushes every token and the view.
+  - **Exit.** It exits after 60 s without a reachable socket, and it clears its tokens and exits once the plugin is disabled or unlinked.
+  - **Options** are read without `tomllib` on Python older than 3.11.
+- `plugin/bin/layout.py` and `plugin/layouts/{latte,mocha}.toml`: the sidebar block, managed between the `# >>> covr.sidebar (covr)` and `# <<< covr.sidebar` markers.
+  - Install is idempotent, and uninstall removes exactly what install added.
+  - A config that would define our tables twice is refused, and nothing is written.
+  - If `server reload-config` fails, the old file is restored.
+- `tests/e2e/run.sh`: the lifecycle suite, run against an isolated herdr.
 
 ## 7. Known limits
 - If the daemon stops, agent rows are empty (their text is plugin tokens). `herdr plugin action invoke covr.sidebar.start` or a herdr restart brings it back.

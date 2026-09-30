@@ -1,13 +1,13 @@
 id = "covr.sidebar"
 name = "covr"
-version = "0.1.0"
+version = "0.2.0"
 min_herdr_version = "0.9.0"
 description = "Minimal attention-first Spaces/Agents sidebar: one line per entry, shape glyphs, kind optional"
 platforms = ["linux", "macos"]
 
-# Daemon: spawned once after restore; no-op if already running.
+# Daemon: started after restore; after a restart or live handoff a surviving daemon re-pushes everything.
 [[startup]]
-command = ["python3", "bin/covrd.py", "spawn"]
+command = ["python3", "bin/covrd.py", "startup"]
 
 # Hooks only poke the daemon awake (it re-reads herdr state itself).
 [[events]]
@@ -83,3 +83,29 @@ id = "stop"
 title = "covr: stop daemon and clear tokens"
 contexts = ["global"]
 command = ["python3", "bin/covrd.py", "stop"]
+
+[[actions]]
+id = "settings"
+title = "covr: settings"
+contexts = ["global"]
+command = ["python3", "bin/covrd.py", "settings"]
+
+[[actions]]
+id = "install-layout"
+title = "covr: install the sidebar layout into herdr's config.toml"
+contexts = ["global"]
+command = ["python3", "bin/layout.py", "install"]
+
+[[actions]]
+id = "uninstall-layout"
+title = "covr: remove the sidebar layout from herdr's config.toml"
+contexts = ["global"]
+command = ["python3", "bin/layout.py", "uninstall"]
+
+[[panes]]
+id = "settings"
+title = "covr settings"
+placement = "popup"
+width = 84
+height = 18
+command = ["python3", "bin/settings.py"]

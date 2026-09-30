@@ -22,12 +22,12 @@ A minimal, attention-first Spaces/Agents sidebar for [herdr](https://herdr.dev).
 
 Features: attention-first sorting that doesn't flicker, the age pinned to the right edge, optional grouping by project or agent kind, sorting for Spaces (manual, alpha, recent, activity), pinned agents and spaces, and a settings popup.
 
-> **Status: early (0.1).** It's used daily on Linux with herdr 0.9.3. Known gaps are listed in [docs/triage-line-spec.md](docs/triage-line-spec.md#7-known-limits); lifecycle hardening (herdr restarts, multiple named sessions, disabling the plugin) is in progress.
+> **Status: early (0.2).** It's used daily on Linux. The lifecycle is covered by an end-to-end suite (`tests/e2e/run.sh`): herdr restarts, a server that goes away, several named sessions, disabling the plugin, the settings popup, and layout install/uninstall. Known limits are in [docs/triage-line-spec.md](docs/triage-line-spec.md#7-known-limits).
 
 ## Requirements
 
-- herdr 0.9.3 or later
-- Python 3.11 or later (the plugin uses the standard library only)
+- herdr 0.9.1 or later (used daily on 0.9.1; the e2e suite runs on 0.9.3)
+- Python 3.8 or later (standard library only)
 - Linux or macOS
 
 ## Install
@@ -36,7 +36,13 @@ Features: attention-first sorting that doesn't flicker, the age pinned to the ri
 herdr plugin install evanbryant/herdr-covr/plugin
 ```
 
-Then add the sidebar layout: copy the contents of [`plugin/sidebar-latte.toml`](plugin/sidebar-latte.toml) into `~/.config/herdr/config.toml` and run `herdr server reload-config`. The colours are tuned for catppuccin-latte. Agent rows are rendered from the plugin's tokens, so they stay empty while the daemon is stopped.
+Then install the sidebar layout:
+
+```sh
+herdr plugin action invoke covr.sidebar.install-layout
+```
+
+This adds one marked block to herdr's `config.toml` and reloads it. The colours are picked from your `[theme] name`: catppuccin-latte colours for light themes, mocha for everything else. Set `layout = "light"` or `"dark"` in the plugin options to override that. The action refuses to write anything if you already define `[ui.sidebar.spaces]` or `[ui.sidebar.agents]` yourself. `uninstall-layout` removes the block again. Agent rows are rendered from the plugin's tokens, so they stay empty while the daemon is stopped.
 
 ## Keys
 
@@ -62,7 +68,15 @@ command = "covr.sidebar.pin-agent"
 description = "covr: pin agent"
 ```
 
-All actions: `cycle-view`, `toggle-group`, `cycle-kind`, `toggle-label`, `cycle-space-sort`, `pin-agent`, `pin-space`, `start`, `stop` (list them with `herdr plugin action list --plugin covr.sidebar`). The settings popup is `plugin/bin/settings.py`.
+```toml
+[[keys.command]]
+key = "prefix+comma"
+type = "plugin_action"
+command = "covr.sidebar.settings"
+description = "covr: settings"
+```
+
+All actions: `settings`, `cycle-view`, `toggle-group`, `cycle-kind`, `toggle-label`, `cycle-space-sort`, `pin-agent`, `pin-space`, `start`, `stop`, `install-layout`, `uninstall-layout` (list them with `herdr plugin action list --plugin covr.sidebar`).
 
 ## Options
 

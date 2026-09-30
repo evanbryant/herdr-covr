@@ -1,4 +1,4 @@
-# >>> covr.sidebar (covr) — herdr sidebar layout; options live in the plugin config, not here
+# >>> covr.sidebar (covr) — managed by the install-layout action; options live in the plugin config, not here
 [theme.custom]
 surface_dim = "#ccd0da"   # make the spaces/agents divider visible on latte (state colours stay herdr-native)
 
