@@ -145,6 +145,23 @@ Bind any of them in herdr's `config.toml` as `type = "plugin_action"`, `command 
 - **Rollback:** it restores the old file if `herdr server reload-config` fails.
 - **Older blocks:** a block written by an older covr version is recognised. Run `install-layout` again after an upgrade, so the block's colour rules match the current glyphs (0.3.3 changed asleep from `☾` to `⏾`).
 
+## Platforms
+
+The same code runs on Linux, macOS and Windows. Only a few mechanisms differ:
+
+| | Linux / macOS | Windows |
+|---|---|---|
+| herdr's API | Unix socket at `HERDR_SOCKET_PATH` | named pipe `\\.\pipe\<HERDR_SOCKET_PATH>` |
+| one daemon per session | `fcntl.flock` on `covrd.lock` | `msvcrt.locking` on `covrd.lock` |
+| waking the daemon (hooks, resync, stop) | `SIGUSR1` / `SIGUSR2` / `SIGTERM` | a word appended to the `wake` file, checked every 0.1 s |
+| detaching the daemon | new session | detached process group, broken away from the hook's job |
+| settings popup | curses | VT escape sequences, keys through `msvcrt` |
+| herdr's config / state | `~/.config/herdr` / `~/.local/state/herdr` | `%APPDATA%\herdr` / `%LOCALAPPDATA%\herdr` |
+
+- **Paths:** herdr's own directories are found from the plugin directories herdr passes, so XDG overrides and Windows profile folders need no special handling.
+- **Encoding:** every file and subprocess uses UTF-8 explicitly, because Windows Python's default encoding is not UTF-8.
+- **Child processes:** on Windows, `git` and `herdr` run without a console window.
+
 ## Known limits
 
 - **No daemon, no rows:** if the daemon is not running, agent rows are empty, because their text comes from the daemon's tokens. `start`, or a herdr restart, brings it back.
@@ -152,3 +169,4 @@ Bind any of them in herdr's `config.toml` as `type = "plugin_action"`, `command 
 - **Resizing:** after you drag the sidebar wider or narrower, alignment catches up within one tick.
 - **Sorting moves spaces:** any `space_sort` other than `manual` really moves spaces, which renumbers them.
 - **The split** between Spaces and Agents is herdr's; drag it once.
+- **Windows:** herdr's plugin support there is a preview. The settings popup is tested by driving it directly, not inside herdr's popup pane (the test herdr runs without a client window).

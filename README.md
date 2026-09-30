@@ -3,7 +3,7 @@
 [![tests](https://github.com/evanbryant/herdr-covr/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/evanbryant/herdr-covr/actions/workflows/tests.yml)
 ![herdr](https://img.shields.io/badge/herdr-%E2%89%A5%200.9.0-5c58b2)
 ![python](https://img.shields.io/badge/python-%E2%89%A5%203.8-3776ab)
-![platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macOS-555)
+![platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20windows-555)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 A compact Spaces/Agents sidebar for [herdr](https://herdr.dev). Each agent takes one line, sorted by what needs you. A second line appears only when an agent is blocked (why) or has just finished (what).
@@ -33,7 +33,7 @@ Both screenshots show the same session, captured headless from the test sandbox 
 
 ## Install
 
-Needs herdr 0.9.0+, Python 3.8+ (standard library only), Linux or macOS.
+Needs herdr 0.9.0+ and Python 3.8+ (standard library only), on Linux, macOS or Windows. On Windows, the `python3` command must start Python: for example `uv python install --default`, or a `python3` alias for the python.org install. herdr itself rates plugins on Windows as a preview.
 
 ```sh
 herdr plugin install evanbryant/herdr-covr/plugin
@@ -98,13 +98,15 @@ tests/e2e/run.sh                               # lifecycle against an isolated h
 HERDR_BIN=/path/to/herdr PYTHON=python3.8 tests/e2e/run.sh restart sessions   # one herdr/Python, some tests
 ```
 
-Each e2e run gets its own HOME, socket and tmux server, and never touches your herdr. It covers:
+On Windows, `py tests\e2e\windows.py` runs the same lifecycle checks against a headless `herdr.exe`, apart from the popup, which needs a terminal.
+
+Each e2e run gets its own HOME, socket and tmux server (on Windows, its own user profile folders), and never touches your herdr. It covers:
 - restarts, a server that disappears, and several sessions
 - disabling the plugin, the settings popup, and layout install/uninstall
 - bad options, log rotation, and code reloads
 - a hostile repo's git config
 
-CI runs the unit tests on Linux and macOS (Python 3.8–3.13), and the e2e suite on herdr 0.9.0, 0.9.1 and 0.9.3 (Linux) and 0.9.3 (macOS).
+CI runs the unit tests on Linux, macOS and Windows (Python 3.8–3.13), and the e2e suites on herdr 0.9.0, 0.9.1 and 0.9.3 (Linux), 0.9.3 (macOS) and 0.9.3 (Windows).
 
 ## License
 

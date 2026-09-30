@@ -9,7 +9,8 @@ import json, os, sys, tempfile, time, unittest
 
 _TMP = tempfile.mkdtemp(prefix="covr-unit-")
 for k, sub in (("HOME", "home"), ("XDG_CONFIG_HOME", "config"), ("XDG_STATE_HOME", "state"),
-               ("HERDR_PLUGIN_CONFIG_DIR", "plugin-config"), ("HERDR_PLUGIN_STATE_DIR", "plugin-state")):
+               ("HERDR_PLUGIN_CONFIG_DIR", os.path.join("herdr-config", "plugins", "config", "covr.sidebar")),
+               ("HERDR_PLUGIN_STATE_DIR", os.path.join("herdr-state", "plugins", "covr.sidebar"))):
     os.environ[k] = os.path.join(_TMP, sub)
     os.makedirs(os.environ[k], exist_ok=True)
 os.environ["HERDR_SOCKET_PATH"] = os.path.join(_TMP, "none", "herdr.sock")
@@ -75,7 +76,7 @@ def opts(**kw):
 class Base(unittest.TestCase):
     def setUp(self):
         self._call = covrd.call
-        with open(covrd.PINS, "w") as f:
+        with open(covrd.PINS, "w", encoding="utf-8") as f:
             json.dump({"agents": [], "spaces": []}, f)
 
     def tearDown(self):
@@ -219,7 +220,7 @@ class Ordering(Base):
         self.assertTrue(out["p1"]["head"].startswith("⏾ api"))
 
     def test_pinned_agent_leads_and_is_marked(self):
-        with open(covrd.PINS, "w") as f:
+        with open(covrd.PINS, "w", encoding="utf-8") as f:
             json.dump({"agents": ["p1"], "spaces": []}, f)
         out, *_ = self.run_compute(self.herdr())
         self.assertEqual(out["p1"]["pin"], "0")
@@ -291,7 +292,7 @@ class Options(unittest.TestCase):
 
     def test_read_flat_reads_top_level_keys_only(self):
         p = os.path.join(_TMP, "flat.toml")
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8") as f:
             f.write('# c\nview = "needs me"  # trailing\ntick_seconds = 7\n\n[table]\nview = "x"\n')
         self.assertEqual(covrd.read_flat(p), {"view": "needs me", "tick_seconds": 7})
 
@@ -305,14 +306,14 @@ class Options(unittest.TestCase):
             self.assertIsNotNone(covrd.validate(k, v)[1], (k, v))
 
     def test_options_ignore_bad_values_and_keep_good_ones(self):
-        with open(os.path.join(covrd.CFG_DIR, "config.toml"), "w") as f:
+        with open(os.path.join(covrd.CFG_DIR, "config.toml"), "w", encoding="utf-8") as f:
             f.write('view = "bogus"\nspace_sort = "alpha"\ntick_seconds = "x"\nunknown = 1\n')
         covrd.notify = lambda body: None
         o = covrd.options()
         self.assertEqual((o["view"], o["space_sort"], o["tick_seconds"]), ("triage", "alpha", 5))
 
     def test_options_without_tomllib_match(self):
-        with open(os.path.join(covrd.CFG_DIR, "config.toml"), "w") as f:
+        with open(os.path.join(covrd.CFG_DIR, "config.toml"), "w", encoding="utf-8") as f:
             f.write('group_by = "project"  # c\nspace_sort = \'alpha\'\ndisambiguate = false\nstale_after = "2h"\n')
         with_toml = covrd.options()
         saved, covrd.tomllib = covrd.tomllib, None
@@ -340,11 +341,41 @@ class Lifecycle(unittest.TestCase):
     def test_client_prefs_path_follows_the_session_socket(self):
         saved = covrd.SOCK
         try:
-            covrd.SOCK = "/h/.config/herdr/sessions/two/herdr.sock"
-            want = f"local-{covrd.fnv1a64(b'/h/.config/herdr/sessions/two/herdr-client.sock'):016x}.json"
+            covrd.SOCK = os.path.join(_TMP, "herdr", "sessions", "two", "herdr.sock")
+            client = os.path.join(os.path.dirname(covrd.SOCK), "herdr-client.sock")
+            want = f"local-{covrd.fnv1a64(client.encode()):016x}.json"
             self.assertTrue(covrd.client_prefs_path().endswith(os.path.join("client-shell", want)))
         finally:
             covrd.SOCK = saved
+
+    def test_herdr_dirs_come_from_the_plugin_dirs(self):
+        # herdr passes <config>/plugins/config/<id> and <state>/plugins/<id>; the herdr dirs are above them
+        self.assertEqual(covrd.HERDR_CONFIG_DIR, os.path.join(_TMP, "herdr-config"))
+        self.assertEqual(covrd.HERDR_STATE_DIR, os.path.join(_TMP, "herdr-state"))
+        self.assertEqual(covrd.HERDR_CONFIG, os.path.join(_TMP, "herdr-config", "config.toml"))
+
+    def test_file_contains_finds_text_across_chunk_boundaries(self):
+        p = os.path.join(_TMP, "transcript.jsonl")
+        with open(p, "wb") as f:
+            f.write(b"x" * ((1 << 20) - 3) + "Fix checkout redirect".encode() + b"y" * 10)
+        self.assertTrue(covrd.file_contains(p, "Fix checkout redirect"))
+        self.assertFalse(covrd.file_contains(p, "Something else"))
+        self.assertFalse(covrd.file_contains(os.path.join(_TMP, "missing.jsonl"), "x"))
+
+    def test_wake_file_words(self):
+        woke, memo = {"flag": False, "stop": False}, {}
+        covrd.take_wake(woke, memo)  # no file: nothing happens
+        self.assertEqual((woke["flag"], memo), (False, {}))
+        os.makedirs(covrd.RUN_DIR, exist_ok=True)
+        with open(covrd.WAKE, "w", encoding="utf-8") as f:
+            f.write("wake\nresync\n")
+        covrd.take_wake(woke, memo)
+        self.assertTrue(woke["flag"] and memo.get("resync") and not woke["stop"])
+        self.assertFalse(os.path.exists(covrd.WAKE))
+        with open(covrd.WAKE, "w", encoding="utf-8") as f:
+            f.write("stop\n")
+        covrd.take_wake(woke, memo)
+        self.assertTrue(woke["stop"])
 
     def test_seq_strictly_increases_even_if_the_clock_steps_back(self):
         covrd.SEQ["last"] = 10 ** 13  # far in the future
@@ -414,19 +445,22 @@ class Spaces(Base):
 
 class LayoutFile(unittest.TestCase):
     def setUp(self):
+        import subprocess
         self.cfg = os.path.join(_TMP, "herdr-config.toml")
-        self.saved = (covrd.HERDR_CONFIG, covrd.HERDR, covrd.notify)
-        covrd.HERDR_CONFIG, covrd.HERDR, covrd.notify = self.cfg, "true", lambda body: None  # `true`: reload succeeds
+        self.saved = (covrd.HERDR_CONFIG, covrd.notify, layout.subprocess.run)
+        self.reload_rc = 0
+        covrd.HERDR_CONFIG, covrd.notify = self.cfg, lambda body: None
+        layout.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, self.reload_rc, "", "rejected")
 
     def tearDown(self):
-        covrd.HERDR_CONFIG, covrd.HERDR, covrd.notify = self.saved
+        covrd.HERDR_CONFIG, covrd.notify, layout.subprocess.run = self.saved
 
     def write(self, text):
-        with open(self.cfg, "w") as f:
+        with open(self.cfg, "w", encoding="utf-8") as f:
             f.write(text)
 
     def read(self):
-        with open(self.cfg) as f:
+        with open(self.cfg, encoding="utf-8") as f:
             return f.read()
 
     ORIG = ('[theme]\nname = "catppuccin-latte"\n\n# >>> covr.sidebar keys\n[[keys.command]]\nkey = "prefix+a"\n'
@@ -457,12 +491,12 @@ class LayoutFile(unittest.TestCase):
 
     def test_failed_reload_restores_the_file(self):
         self.write(self.ORIG)
-        covrd.HERDR = "false"
+        self.reload_rc = 1  # herdr rejects the new config
         self.assertEqual(layout.install(), 1)
         self.assertEqual(self.read(), self.ORIG)
 
     def test_block_found_with_crlf_and_without_final_newline(self):
-        with open(os.path.join(layout.LAYOUTS, "mocha.toml")) as f:
+        with open(os.path.join(layout.LAYOUTS, "mocha.toml"), encoding="utf-8") as f:
             blk = f.read()
         self.assertTrue(layout.BLOCK.search(("a = 1\n\n" + blk).replace("\n", "\r\n")))
         self.assertTrue(layout.BLOCK.search("a = 1\n\n" + blk.rstrip("\n")))
@@ -499,13 +533,13 @@ class Contract(unittest.TestCase):
 
     def test_every_glyph_has_one_colour_rule_in_each_layout(self):
         for variant in ("latte.toml", "mocha.toml"):
-            with open(os.path.join(self.ROOT, "layouts", variant)) as f:
+            with open(os.path.join(self.ROOT, "layouts", variant), encoding="utf-8") as f:
                 text = f.read()
             for g in covrd.GLYPH.values():
                 self.assertEqual(text.count(f'starts_with = "{g}"'), 1, (variant, g))
 
     def test_layout_references_every_row_token_the_daemon_pushes(self):
-        with open(os.path.join(self.ROOT, "layouts", "latte.toml")) as f:
+        with open(os.path.join(self.ROOT, "layouts", "latte.toml"), encoding="utf-8") as f:
             text = f.read()
         for tok in ("head", "wait", "done", "task", "rule", "alert", "dirty", "spin"):
             self.assertIn(f'"${tok}"', text)

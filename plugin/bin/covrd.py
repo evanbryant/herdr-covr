@@ -11,7 +11,15 @@ the daemon never rewrites herdr's own config.toml (only the install-layout actio
 One daemon per herdr session (socket): its pid, lock, memo and log live in
 $HERDR_PLUGIN_STATE_DIR/s/<hash of the socket path>/. Pins are shared by all sessions.
 """
-import errno, fcntl, glob, hashlib, json, os, re, signal, socket, subprocess, sys, time, unicodedata
+import errno, glob, hashlib, json, os, re, signal, socket, subprocess, sys, time, unicodedata
+
+WIN = os.name == "nt"
+if WIN:
+    import msvcrt
+else:
+    import fcntl
+# Windows: no console window flashing up for the daemon's git / herdr child processes
+NOWIN = {"creationflags": 0x08000000} if WIN else {}  # CREATE_NO_WINDOW
 
 try:
     import tomllib
@@ -21,17 +29,33 @@ except ImportError:  # pragma: no cover
 PID = "covr.sidebar"
 SRC = "covr"
 HERE = os.path.dirname(os.path.abspath(__file__))
-CFG_DIR = os.environ.get("HERDR_PLUGIN_CONFIG_DIR") or os.path.expanduser(f"~/.config/herdr/plugins/config/{PID}")
-STATE_DIR = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.expanduser(f"~/.local/state/herdr/plugins/{PID}")
+def _herdr_home(kind):
+    """herdr's own config (or state) directory. herdr passes the plugin's dirs, <herdr dir>/plugins/<config|>/<id>,
+    so walk up from those; otherwise use the platform default."""
+    env = os.environ.get("HERDR_PLUGIN_CONFIG_DIR" if kind == "config" else "HERDR_PLUGIN_STATE_DIR")
+    tail = ("plugins", "config", PID) if kind == "config" else ("plugins", PID)
+    if env:
+        parts = os.path.normpath(env).split(os.sep)
+        if tuple(parts[-len(tail):]) == tail:
+            return os.sep.join(parts[:-len(tail)])
+    if WIN:
+        return os.path.join(os.environ.get("APPDATA" if kind == "config" else "LOCALAPPDATA") or os.path.expanduser("~"), "herdr")
+    base = (os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")) if kind == "config" \
+        else (os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"))
+    return os.path.join(base, "herdr")
+
+
+HERDR_CONFIG_DIR, HERDR_STATE_DIR = _herdr_home("config"), _herdr_home("state")
+CFG_DIR = os.environ.get("HERDR_PLUGIN_CONFIG_DIR") or os.path.join(HERDR_CONFIG_DIR, "plugins", "config", PID)
+STATE_DIR = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.join(HERDR_STATE_DIR, "plugins", PID)
 HERDR = os.environ.get("HERDR_BIN_PATH") or "herdr"
-SOCK = os.environ.get("HERDR_SOCKET_PATH") or os.path.expanduser("~/.config/herdr/herdr.sock")
+SOCK = os.environ.get("HERDR_SOCKET_PATH") or os.path.join(HERDR_CONFIG_DIR, "herdr.sock")
 SESSION = hashlib.sha1(SOCK.encode()).hexdigest()[:12]
 RUN_DIR = os.path.join(STATE_DIR, "s", SESSION)
-PIDFILE, LOCK, MEMO, LOG = (os.path.join(RUN_DIR, n) for n in ("covrd.pid", "covrd.lock", "memo.json", "covrd.log"))
+PIDFILE, LOCK, MEMO, LOG, WAKE = (os.path.join(RUN_DIR, n) for n in ("covrd.pid", "covrd.lock", "memo.json", "covrd.log", "wake"))
 LEGACY_PID, LEGACY_MEMO = os.path.join(STATE_DIR, "covrd.pid"), os.path.join(STATE_DIR, "memo.json")  # before 0.2
-HERDR_CONFIG = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "herdr", "config.toml")
+HERDR_CONFIG = os.path.join(HERDR_CONFIG_DIR, "config.toml")
 GONE_AFTER = 60  # seconds without a reachable socket before the daemon decides its server is gone for good
-STATE_HOME = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
 LOG_MAX = 256 * 1024  # covrd.log rotates to covrd.log.1 past this size
 TOKEN_MAX = 80        # herdr caps token values at 80 characters
 MIN_GAP = 0.5         # seconds between recomputes when hooks fire in bursts (pane.focused on every focus change)
@@ -57,7 +81,7 @@ def log(*a):
             os.replace(LOG, LOG + ".1")  # one rotation: the previous log is kept, older ones dropped
     except OSError:
         pass
-    with open(LOG, "a") as f:
+    with open(LOG, "a", encoding="utf-8") as f:
         f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + " ".join(str(x) for x in a) + "\n")
 
 
@@ -91,17 +115,38 @@ def read_json(path, default=None):
 
 # ---------------- herdr access ----------------
 def call(method, params=None):
-    s = socket.socket(socket.AF_UNIX)
-    s.settimeout(5)
-    s.connect(SOCK)
-    s.sendall((json.dumps({"id": "covr", "method": method, "params": params or {}}) + "\n").encode())
+    """One request to herdr's API: newline-delimited JSON over its local socket, which is a Unix socket
+    on Linux/macOS and a named pipe (\\\\.\\pipe\\<socket path>) on Windows."""
+    req = (json.dumps({"id": "covr", "method": method, "params": params or {}}) + "\n").encode()
     buf = b""
-    while not buf.endswith(b"\n"):
-        c = s.recv(1 << 16)
-        if not c:
-            break
-        buf += c
-    s.close()
+    if WIN:
+        for attempt in range(20):
+            try:
+                with open("\\\\.\\pipe\\" + SOCK, "r+b", buffering=0) as f:
+                    f.write(req)
+                    while not buf.endswith(b"\n"):
+                        c = f.read(1 << 16)
+                        if not c:
+                            break
+                        buf += c
+                break
+            except FileNotFoundError:
+                raise  # no server: the pipe does not exist
+            except OSError as e:
+                if getattr(e, "winerror", None) != 231 or attempt == 19:  # ERROR_PIPE_BUSY: all instances in use
+                    raise
+                time.sleep(0.05)
+    else:
+        s = socket.socket(socket.AF_UNIX)
+        s.settimeout(5)
+        s.connect(SOCK)
+        s.sendall(req)
+        while not buf.endswith(b"\n"):
+            c = s.recv(1 << 16)
+            if not c:
+                break
+            buf += c
+        s.close()
     r = json.loads(buf)
     if "error" in r:
         raise RuntimeError(f"{method}: {r['error']}")
@@ -109,7 +154,7 @@ def call(method, params=None):
 
 
 def cli(*args):
-    subprocess.run([HERDR, *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+    subprocess.run([HERDR, *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, **NOWIN)
 
 
 SEQ = {"last": 0, "on": True}
@@ -320,7 +365,7 @@ def client_prefs_path():
     """herdr keeps each session's dragged sidebar width in client-shell/local-<fnv1a64(client socket)>.json;
     the client socket sits next to the server socket (…/herdr-client.sock)."""
     client = os.path.join(os.path.dirname(SOCK), "herdr-client.sock")
-    return os.path.join(STATE_HOME, "herdr", "client-shell", f"local-{fnv1a64(client.encode()):016x}.json")
+    return os.path.join(HERDR_STATE_DIR, "client-shell", f"local-{fnv1a64(client.encode()):016x}.json")
 
 
 def sidebar_width():
@@ -427,6 +472,24 @@ def tkey(cwd, title):
     return "h:" + hashlib.sha1(f"{cwd}|{title}".encode()).hexdigest()[:16]
 
 
+def file_contains(path, text, limit=64 << 20):
+    """Does the file contain `text`? Reads in chunks (up to `limit` bytes), keeping an overlap so a match
+    across a chunk boundary is found."""
+    needle, tail, seen = text.encode("utf-8"), b"", 0
+    try:
+        with open(path, "rb") as f:
+            while seen < limit:
+                chunk = f.read(1 << 20)
+                if not chunk:
+                    return False
+                if needle in tail + chunk:
+                    return True
+                tail, seen = chunk[-(len(needle) - 1):] if len(needle) > 1 else b"", seen + len(chunk)
+    except OSError:
+        pass
+    return False
+
+
 def transcript_mtime(cwd, title, cache):
     """Best-effort 'last activity' for an agent whose state began before the daemon saw it:
     newest Claude transcript in the cwd's project dir that mentions the session title."""
@@ -442,13 +505,9 @@ def transcript_mtime(cwd, title, cache):
     files.sort(key=lambda p: -os.path.getmtime(p))
     best = None
     for p in files[:25]:
-        try:
-            r = subprocess.run(["grep", "-lF", title, p], capture_output=True, timeout=3)
-            if r.returncode == 0:
-                best = os.path.getmtime(p)
-                break
-        except Exception:
-            pass
+        if file_contains(p, title):
+            best = os.path.getmtime(p)
+            break
     cache[key] = best
     return best
 
@@ -458,7 +517,7 @@ def wait_reason(pane_id):
         txt = call("pane.read", {"pane_id": pane_id, "source": "visible", "lines": 40}).get("read", {}).get("text", "")
     except Exception:
         try:
-            txt = subprocess.run([HERDR, "pane", "read", pane_id], capture_output=True, text=True, timeout=5).stdout
+            txt = subprocess.run([HERDR, "pane", "read", pane_id], capture_output=True, encoding="utf-8", errors="replace", timeout=5, **NOWIN).stdout
         except Exception:
             txt = ""
     lines = [re.sub(r"[│╭╮╰╯─┃]+", " ", l).strip() for l in txt.splitlines()]
@@ -633,7 +692,7 @@ def compute(opt, memo):
                 # and a background status must never take index.lock from under the user's git
                 r = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", cwd,
                                     "status", "--porcelain", "--untracked-files=no"],
-                                   capture_output=True, text=True, timeout=2)
+                                   capture_output=True, encoding="utf-8", errors="replace", timeout=2, **NOWIN)
                 if r.returncode == 0 and r.stdout.strip():
                     memo["dirty"][w["workspace_id"]] = True
             except Exception:
@@ -796,18 +855,42 @@ def apply(out, wout, view, memo):
 
 
 # ---------------- lifecycle ----------------
-def lock_held():
-    """Is some process holding this session's daemon lock? (probe with a shared lock; never blocks)"""
+def _try_lock(fd, exclusive):
+    """Non-blocking lock on the whole lock file. True if taken. flock on Unix; on Windows msvcrt byte-range
+    locks (always exclusive; released by the OS when the process exits, like flock)."""
     try:
-        fd = os.open(LOCK, os.O_RDONLY)
+        if WIN:
+            os.lseek(fd, 0, 0)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _unlock(fd):
+    try:
+        if WIN:
+            os.lseek(fd, 0, 0)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
+def lock_held():
+    """Is some process holding this session's daemon lock? (a momentary probe; never blocks)"""
+    try:
+        fd = os.open(LOCK, os.O_RDWR if WIN else os.O_RDONLY)
     except OSError:
         return False
     try:
-        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return False
-    except OSError as e:
-        return e.errno in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK)
+        if _try_lock(fd, exclusive=False):
+            _unlock(fd)
+            return False
+        return True
     finally:
         os.close(fd)
 
@@ -831,11 +914,9 @@ def take_lock():
     os.makedirs(RUN_DIR, exist_ok=True)
     fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o644)
     for _ in range(20):
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if _try_lock(fd, exclusive=True):
             return fd
-        except OSError:
-            time.sleep(0.05)
+        time.sleep(0.05)
     os.close(fd)
     return None
 
@@ -844,8 +925,10 @@ def retire_legacy():
     """A daemon from before per-session state (global pidfile) would run beside the new one: stop it
     once, and carry its memo over (ages, focus times, the saved manual order) to the default session."""
     try:
+        if WIN:
+            raise ValueError("no pre-0.2 daemons on Windows")
         pid = int(read_text(LEGACY_PID, ""))
-        cmd = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout
+        cmd = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, encoding="utf-8", errors="replace").stdout
         if "covrd.py" in cmd and " run" in cmd:
             os.kill(pid, signal.SIGTERM)
             log("stopped pre-0.2 daemon", pid)
@@ -899,9 +982,15 @@ def run():
             memo["manual"] = old["manual"]
         memo["last_sort"] = old.get("last_sort")
         SEQ["last"] = int(old.get("seq") or 0)
-    woke = {"flag": False}
-    signal.signal(signal.SIGUSR1, lambda *_: woke.update(flag=True))
-    signal.signal(signal.SIGUSR2, lambda *_: (memo.update(resync=True), woke.update(flag=True)))
+    woke = {"flag": False, "stop": False}
+    if WIN:
+        try:
+            os.remove(WAKE)  # requests addressed to an earlier daemon are stale
+        except OSError:
+            pass
+    else:
+        signal.signal(signal.SIGUSR1, lambda *_: woke.update(flag=True))
+        signal.signal(signal.SIGUSR2, lambda *_: (memo.update(resync=True), woke.update(flag=True)))
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     log("started", os.getpid(), "socket", SOCK)
     down_since = None
@@ -935,6 +1024,11 @@ def run():
                     memo.pop("view", None)
             tick = options()["tick_seconds"]
             for _ in range(tick * 10):
+                if WIN:
+                    take_wake(woke, memo)
+                    if woke["stop"]:
+                        log("stop requested")
+                        return
                 if woke["flag"] and time.time() - last_tick >= MIN_GAP:
                     break  # a hook woke us; bursts (focus changes) coalesce into one recompute
                 time.sleep(0.1)
@@ -950,15 +1044,47 @@ def run():
             os.execv(sys.executable, [sys.executable, os.path.abspath(__file__), "run"])
 
 
+def take_wake(woke, memo):
+    """Windows has no SIGUSR1/2: hooks append a word to the wake file instead (wake | resync | stop)."""
+    try:
+        taken = WAKE + f".{os.getpid()}"
+        os.replace(WAKE, taken)
+    except OSError:
+        return
+    words = (read_text(taken, "") or "").split()
+    try:
+        os.remove(taken)
+    except OSError:
+        pass
+    if words:
+        woke["flag"] = True
+    if "resync" in words:
+        memo["resync"] = True
+    if "stop" in words:
+        woke["stop"] = True
+
+
 def spawn():
     """Start this session's daemon unless it runs; safe to call from many hooks at once."""
     if alive():
         return alive()
     retire_legacy()
     os.makedirs(RUN_DIR, exist_ok=True)
+    argv = [sys.executable, os.path.abspath(__file__), "run"]
     with open(LOG, "a") as out:  # the child keeps its own copy of the handle
-        subprocess.Popen([sys.executable, os.path.abspath(__file__), "run"], start_new_session=True,
-                         stdout=out, stderr=subprocess.STDOUT, env=os.environ.copy())
+        if WIN:
+            # detached, no console, own process group; break away from the hook's job object when herdr allows
+            # it, so the daemon outlives the hook that started it
+            base = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+            for flags in (base | 0x01000000, base):  # | CREATE_BREAKAWAY_FROM_JOB
+                try:
+                    subprocess.Popen(argv, creationflags=flags, stdin=subprocess.DEVNULL, stdout=out,
+                                     stderr=subprocess.STDOUT, env=os.environ.copy())
+                    break
+                except OSError:
+                    continue
+        else:
+            subprocess.Popen(argv, start_new_session=True, stdout=out, stderr=subprocess.STDOUT, env=os.environ.copy())
     for _ in range(30):
         if alive():
             break
@@ -966,22 +1092,35 @@ def spawn():
     return alive()
 
 
-def signal_daemon(sig=signal.SIGUSR1):
+def signal_daemon(kind="wake"):
+    """Tell this session's daemon to recompute now ("wake"), push everything again ("resync"), or exit
+    ("stop"). Signals on Unix; on Windows a word appended to the wake file, which the daemon checks every
+    0.1 s. Returns the daemon's pid, or None if none runs."""
     p = alive()
     if p:
         try:
-            os.kill(p, sig)
+            if WIN:
+                with open(WAKE, "a", encoding="utf-8") as f:
+                    f.write(kind + "\n")
+            else:
+                os.kill(p, {"wake": signal.SIGUSR1, "resync": signal.SIGUSR2, "stop": signal.SIGTERM}[kind])
         except OSError:
             pass
     return p
 
 
 def stop():
-    p = signal_daemon(signal.SIGTERM)
+    p = signal_daemon("stop")
     for _ in range(50):  # wait for it to exit before clearing, so a last tick cannot re-push
         if not lock_held():
             break
         time.sleep(0.1)
+    else:
+        if p and WIN:
+            try:
+                os.kill(p, signal.SIGTERM)  # TerminateProcess; the OS releases its lock
+            except OSError:
+                pass
     SEQ["last"] = int((read_json(MEMO, {}) or {}).get("seq") or 0)
     clear_all()
     return p
@@ -990,7 +1129,7 @@ def stop():
 def open_settings():
     """The settings popup is a plugin pane, so it runs with this session's plugin env."""
     r = subprocess.run([HERDR, "plugin", "pane", "open", "--plugin", PID, "--entrypoint", "settings"],
-                       capture_output=True, text=True, timeout=10)
+                       capture_output=True, encoding="utf-8", errors="replace", timeout=10, **NOWIN)
     if r.returncode != 0:
         busy = "ui_busy" in (r.stdout + r.stderr)
         notify("close the open dialog first, then retry" if busy else (r.stderr or r.stdout).strip()[:200])
@@ -1022,7 +1161,7 @@ def main():
     elif cmd == "startup":
         # [[startup]] also runs after a server restart / live handoff: a surviving daemon must re-push
         # everything (the new server has none of our tokens and no view), a missing one is started
-        if not signal_daemon(signal.SIGUSR2):
+        if not signal_daemon("resync"):
             spawn()
         print("running", alive())
     elif cmd == "spawn":

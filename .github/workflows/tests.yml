@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.9", "3.12", "3.13"]
         include:
           - os: ubuntu-22.04
@@ -62,3 +62,31 @@ jobs:
           HERDR_BIN: ${{ runner.temp }}/herdr/${{ matrix.asset }}
           E2E_ROOT: /tmp/ce
         run: tests/e2e/run.sh
+
+  e2e-windows:
+    # native Windows: named-pipe transport, msvcrt locking, the wake file, detached daemons (tests/e2e/windows.py)
+    name: e2e · herdr ${{ matrix.herdr }} · windows-latest
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        herdr: ["0.9.3"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch herdr ${{ matrix.herdr }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "v${{ matrix.herdr }}" -R herdrdev/herdr -p herdr-windows-x86_64.zip -D "$env:RUNNER_TEMP"
+          Expand-Archive "$env:RUNNER_TEMP\herdr-windows-x86_64.zip" "$env:RUNNER_TEMP\herdr"
+          & "$env:RUNNER_TEMP\herdr\herdr.exe" --version
+      - name: Lifecycle suite
+        shell: pwsh
+        run: |
+          $env:HERDR_BIN = "$env:RUNNER_TEMP\herdr\herdr.exe"
+          python tests/e2e/windows.py

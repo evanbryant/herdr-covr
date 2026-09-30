@@ -56,7 +56,8 @@ def valid(text):
 
 
 def reload_or_restore(path, before, existed):
-    r = subprocess.run([covrd.HERDR, "server", "reload-config"], capture_output=True, text=True, timeout=15)
+    r = subprocess.run([covrd.HERDR, "server", "reload-config"], capture_output=True, encoding="utf-8",
+                       errors="replace", timeout=15, **covrd.NOWIN)
     if r.returncode == 0:
         return True
     if existed:
