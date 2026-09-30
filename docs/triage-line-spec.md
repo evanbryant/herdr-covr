@@ -105,7 +105,13 @@ File: `~/.config/herdr/plugins/config/covr.sidebar/config.toml` (actions rewrite
   - **One daemon per herdr session.** Its state lives in `$HERDR_PLUGIN_STATE_DIR/s/<hash of the socket>/`. An `flock` held for the daemon's lifetime makes concurrent spawns safe. Pins are shared by all sessions.
   - **Resync.** If herdr no longer shows tokens the daemon pushed (after a server restart), it re-pushes every token and the view.
   - **Exit.** It exits after 60 s without a reachable socket, and it clears its tokens and exits once the plugin is disabled or unlinked.
-  - **Options** are read without `tomllib` on Python older than 3.11.
+  - **Options** are read without `tomllib` on Python older than 3.11. Invalid values are refused by `set`; in a hand-edited file they are ignored, with one log line and one toast each, and the defaults are used.
+  - **Hooks:** besides agent and pane events, renames, focus changes, closes and reorders poke the daemon. Bursts coalesce into at most one recompute per 0.5 s.
+  - **Sidebar width** is read from *this* session's client prefs (`client-shell/local-<fnv1a64 of the session's herdr-client.sock>.json`), else `ui.sidebar_width`, else 26.
+  - **Reports carry `--seq`** (strictly increasing ms, persisted), so a late write can't overtake `stop`'s clear. If herdr keeps rejecting them, the daemon falls back to unsequenced reports.
+  - **Every token is at most 80 characters** (herdr's cap). Long text is shortened with `…`.
+  - **Space sorting backs off:** re-applying the same order 3 times within 60 s (someone keeps moving spaces back) pauses sorting for 5 minutes.
+  - **State hygiene:** the transcript cache stores hashed keys only, and every cache is pruned to live panes and workspaces. `covrd.log` rotates at 256 KB, keeping one old log.
 - `plugin/bin/layout.py` and `plugin/layouts/{latte,mocha}.toml`: the sidebar block, managed between the `# >>> covr.sidebar (covr)` and `# <<< covr.sidebar` markers.
   - Install is idempotent, and uninstall removes exactly what install added.
   - A config that would define our tables twice is refused, and nothing is written.

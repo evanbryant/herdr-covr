@@ -5,7 +5,8 @@
 # env: HERDR_BIN   herdr binary (default: `command -v herdr`)
 #      PLUGIN_DIR  plugin under test (default: ../../plugin)
 #      E2E_ROOT    sandbox root; keep it short, unix sockets must stay < 108 chars (default: /tmp/covr-e2e)
-# tests: single tokens restart gone sessions disable popup notoml layout   (default: all)
+# tests: single tokens restart gone sessions disable popup notoml layout
+#        events width seq cap validate hygiene fight reload   (default: all)
 # Linux only (reads /proc to attribute daemons to the sandbox).
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -232,7 +233,126 @@ EOF
   [ -z "$why" ] && ok layout || no layout "$why"
 }
 
-ALL="single tokens restart gone sessions disable popup notoml layout"
+# ---------------------------------------------------------------- hardening (0.3)
+run_dir() { ls -d "$B"/home/.local/state/herdr/plugins/covr.sidebar/s/*/ 2>/dev/null | head -1; }
+opt() { # <key> <value> — through the plugin's own CLI, like the actions do
+  SOCK=$SOCK1 sb "cd '$PLUGIN_DIR' && python3 bin/covrd.py set $1 '$2'" >/dev/null 2>&1; }
+head_of() { # <pane> -> its $head token
+  sb 'hsock agent.list' | python3 -c 'import json, sys
+print([(a.get("tokens") or {}).get("head", "") for a in json.load(sys.stdin)["result"]["agents"] if a["pane_id"] == sys.argv[1]][0])' "$1"; }
+t_events() {  # H2: a tab rename shows up through the hook, long before the next tick
+  fresh
+  until_t 15 all_heads >/dev/null
+  opt tick_seconds 60; sleep 6                  # ticks are now a minute apart: only a hook can be this fast
+  local p tab; p=$(cut -d' ' -f1 < "$B/home/panes")
+  tab=$(sb 'hsock agent.list' | python3 -c 'import json, sys
+print([a["tab_id"] for a in json.load(sys.stdin)["result"]["agents"] if a["pane_id"] == sys.argv[1]][0])' "$p")
+  sb "herdr tab rename $tab renamedtab" >/dev/null
+  until_t 3 eval 'head_of "$p" | grep -q renamedtab' && ok events || no events "head after rename: $(head_of "$p")"
+}
+t_width() {   # H3: each session reads ITS OWN dragged width (fnv1a of its client socket)
+  local py='import sys; sys.path.insert(0, sys.argv[1] + "/bin"); import covrd; print(covrd.sidebar_width())'
+  local cs="$B/home/.local/state/herdr/client-shell"; mkdir -p "$cs"
+  for pair in "$SOCK1:41" "$SOCK2:55"; do
+    local sock=${pair%:*} w=${pair##*:}
+    local h; h=$(python3 -c 'import sys
+h = 0xcbf29ce484222325
+for b in sys.argv[1].encode(): h = ((h ^ b) * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+print(format(h, "016x"))' "${sock%/*}/herdr-client.sock")
+    echo "{\"sidebar_width\": $w}" > "$cs/local-$h.json"
+  done
+  echo '{"sidebar_width": 999}' > "$cs/local-0000000000000000.json"   # someone else's, newest: must be ignored
+  local a b; a=$(SOCK=$SOCK1 sb "python3 -c '$py' '$PLUGIN_DIR'"); b=$(SOCK=$SOCK2 sb "python3 -c '$py' '$PLUGIN_DIR'")
+  [ "$a" = 41 ] && [ "$b" = 55 ] && ok width || no width "default=$a two=$b (want 41 / 55)"
+}
+t_seq() {     # H4: even if herdr rejects our --seq (its last accepted is ahead of ours), rows come back
+  fresh
+  until_t 15 all_heads >/dev/null
+  local far=99999999999999
+  sb "for p in \$(cat ~/panes); do herdr pane report-metadata \$p --source covr --seq $far \
+      --clear-token head --clear-token rank --clear-token age --clear-token pin --clear-token grp >/dev/null; done"
+  until_t 40 all_heads && ok seq || no seq "rows still empty ($(heads)); log: $(tail -3 "$(run_dir)covrd.log" 2>/dev/null)"
+}
+t_cap() {     # H5: on a very wide sidebar the right-pinned age still survives herdr's 80-character cap
+  fresh
+  printf 'onboarding = false\n[ui]\nsidebar_width = 150\n' > "$(cfg)"
+  until_t 15 all_heads >/dev/null                       # the daemon must see the agent before it changes state
+  local p; p=$(cut -d' ' -f4 < "$B/home/panes")          # infra: idle -> working gives it a fresh age
+  sb "herdr pane report-agent $p --source e2e --agent claude --state working" >/dev/null
+  until_t 15 eval 'head_of "$p" | grep -q "m$"'
+  local h n; h=$(head_of "$p"); n=${#h}
+  [[ "$h" == *"<1m" ]] && [ "$n" -le 80 ] && ok cap || no cap "head is $n chars and ends with '${h: -6}' (age cut off?)"
+}
+t_validate() { # H7: bad values are refused by `set`, and ignored (with defaults) when hand-edited
+  fresh
+  until_t 15 all_heads >/dev/null
+  local f="$B/home/.config/herdr/plugins/config/covr.sidebar/config.toml" why=""
+  opt view triage
+  local before; before=$(cat "$f")
+  SOCK=$SOCK1 sb "cd '$PLUGIN_DIR' && python3 bin/covrd.py set tick_seconds abc" >/dev/null 2>&1 && why+="set accepted tick_seconds=abc; "
+  SOCK=$SOCK1 sb "cd '$PLUGIN_DIR' && python3 bin/covrd.py set view bogus" >/dev/null 2>&1 && why+="set accepted view=bogus; "
+  [ "$before" = "$(cat "$f")" ] || why+="options file changed; "
+  printf 'view = "bogus"\ntick_seconds = "x"\nstale_after = "soon"\ngroup_by = 7\n' > "$f"
+  sb "set -- \$(cat ~/panes); herdr pane report-agent \$3 --source e2e --agent claude --state working" >/dev/null
+  sleep 8
+  all_heads || why+="rows lost after bad hand edit ($(heads)); "
+  [ "$(ndaemons)" = 1 ] || why+="daemon died; "
+  local n; n=$(grep -c "ignored" "$(run_dir)covrd.log")
+  [ "$n" -ge 1 ] && [ "$n" -le 4 ] || why+="$n 'ignored' log lines (want 1 per bad value, not per tick); "
+  [ -z "$why" ] && ok validate || no validate "$why"
+}
+t_hygiene() { # H6 + H9: log rotates; memo keeps no raw paths or titles and only live ids
+  fresh
+  until_t 15 all_heads >/dev/null
+  local d why=""; d=$(run_dir)
+  head -c 300000 /dev/zero | tr '\0' x >> "$d/covrd.log"
+  python3 - "$d/memo.json" <<'EOF'
+import json, sys
+m = json.load(open(sys.argv[1]))
+m.setdefault("tcache", {})["/work/secret-repo|Secret session title"] = 1.0
+m.setdefault("focus", {})["w999"] = 1.0
+m["manual"] = (m.get("manual") or []) + ["w999"]
+json.dump(m, open(sys.argv[1], "w"))
+EOF
+  for p in $(daemons); do kill "$p"; done; until_t 5 zero
+  act start; sleep 7
+  [ -f "$d/covrd.log.1" ] && [ "$(stat -c %s "$d/covrd.log")" -lt 262144 ] || why+="log not rotated; "
+  grep -q "secret" "$d/memo.json" && why+="raw tcache key kept; "
+  grep -q "w999" "$d/memo.json" && why+="closed workspace kept in focus/manual; "
+  python3 -c 'import json, sys; t = json.load(open(sys.argv[1])).get("tcache") or {}; sys.exit(0 if all(k.startswith("h:") for k in t) else 1)' "$d/memo.json" || why+="unhashed tcache keys; "
+  [ -z "$why" ] && ok hygiene || no hygiene "$why"
+}
+t_fight() {   # H8: dragging spaces against an active sort makes the daemon back off instead of fighting
+  fresh
+  until_t 15 all_heads >/dev/null
+  opt space_sort alpha; sleep 7
+  local order rev
+  order() { sb 'hsock workspace.list' | python3 -c 'import json, sys
+print(" ".join(w["workspace_id"] for w in sorted(json.load(sys.stdin)["result"]["workspaces"], key=lambda w: w["number"])))'; }
+  rev=$(order | tr ' ' '\n' | tac | python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().split()))')
+  for _ in 1 2 3 4; do            # the user keeps putting THEIR order (reverse alpha) back
+    sb "hsock workspace.move_block '{\"workspace_ids\": $rev}'" >/dev/null
+    sb 'set -- $(cat ~/panes); herdr pane report-agent $3 --source e2e --agent claude --state working' >/dev/null
+    sleep 3
+  done
+  local mine; mine=$(order); sleep 8
+  if grep -q "pausing space sorting" "$(run_dir)covrd.log" && [ "$(order)" = "$mine" ]; then ok fight
+  else no fight "no backoff (log: $(grep -c 'spaces reordered' "$(run_dir)covrd.log") reorders)"; fi
+}
+
+t_reload() {  # updating the plugin's files in place restarts the running daemon onto the new code, rows intact
+  fresh
+  until_t 15 all_heads >/dev/null
+  local before; before=$(daemons)
+  touch "$PLUGIN_DIR/bin/covrd.py"
+  until_t 15 grep -q "plugin code updated" "$(run_dir)covrd.log"
+  sleep 3
+  local after; after=$(daemons)
+  if [ "$(ndaemons)" = 1 ] && [ "$(grep -c '^.* started ' "$(run_dir)covrd.log")" -ge 2 ] && all_heads; then ok reload
+  else no reload "daemons before=$before after=$after, heads $(heads)"; fi
+}
+
+ALL="single tokens restart gone sessions disable popup notoml layout events width seq cap validate hygiene fight reload"
 for t in ${*:-$ALL}; do "t_$t"; done
 [ -n "${KEEP:-}" ] || down
 [ -n "${KEEP:-}" ] || for p in $(daemons); do kill "$p" 2>/dev/null; done

@@ -1,6 +1,6 @@
 id = "covr.sidebar"
 name = "covr"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.9.0"
 description = "Minimal attention-first Spaces/Agents sidebar: one line per entry, shape glyphs, kind optional"
 platforms = ["linux", "macos"]
@@ -9,26 +9,51 @@ platforms = ["linux", "macos"]
 [[startup]]
 command = ["python3", "bin/covrd.py", "startup"]
 
-# Hooks only poke the daemon awake (it re-reads herdr state itself).
+# Hooks only wake the daemon (it re-reads herdr state itself); poke.py is a ~15 ms fast path.
 [[events]]
 on = "pane.agent_status_changed"
-command = ["python3", "bin/covrd.py", "poke"]
+command = ["python3", "bin/poke.py"]
 
 [[events]]
 on = "pane.agent_detected"
-command = ["python3", "bin/covrd.py", "poke"]
+command = ["python3", "bin/poke.py"]
 
 [[events]]
 on = "pane.closed"
-command = ["python3", "bin/covrd.py", "poke"]
+command = ["python3", "bin/poke.py"]
 
 [[events]]
 on = "workspace.created"
-command = ["python3", "bin/covrd.py", "poke"]
+command = ["python3", "bin/poke.py"]
 
 [[events]]
 on = "worktree.opened"
-command = ["python3", "bin/covrd.py", "poke"]
+command = ["python3", "bin/poke.py"]
+
+# renames / focus / order changes: tab labels, the recent sort, done-seen and the manual snapshot update at once
+[[events]]
+on = "tab.renamed"
+command = ["python3", "bin/poke.py"]
+
+[[events]]
+on = "workspace.renamed"
+command = ["python3", "bin/poke.py"]
+
+[[events]]
+on = "workspace.closed"
+command = ["python3", "bin/poke.py"]
+
+[[events]]
+on = "workspace.focused"
+command = ["python3", "bin/poke.py"]
+
+[[events]]
+on = "workspace.reordered"
+command = ["python3", "bin/poke.py"]
+
+[[events]]
+on = "pane.focused"
+command = ["python3", "bin/poke.py"]
 
 [[actions]]
 id = "cycle-view"

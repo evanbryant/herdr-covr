@@ -38,7 +38,7 @@ def theme_name(text):
 def block_for(text):
     """The layout block for this config: drop our [theme.custom] tweak if the user has their own table."""
     v = variant(text)
-    block = open(os.path.join(LAYOUTS, "latte.toml" if v == "light" else "mocha.toml"), encoding="utf-8").read()
+    block = covrd.read_text(os.path.join(LAYOUTS, "latte.toml" if v == "light" else "mocha.toml"))
     if THEME_CUSTOM.search(text):
         block = re.sub(r"^\[theme\.custom\]\n(?:[^\[\n][^\n]*\n)*\n?", "", block, flags=re.M)
     return block if block.endswith("\n") else block + "\n", v
@@ -69,7 +69,7 @@ def reload_or_restore(path, before, existed):
 def install():
     path = covrd.HERDR_CONFIG
     existed = os.path.exists(path)
-    text = open(path, encoding="utf-8").read() if existed else ""
+    text = covrd.read_text(path, "") if existed else ""
     m = BLOCK.search(text)
     outside = text[:m.start()] + text[m.end():] if m else text
     if OURS.search(outside):
@@ -99,7 +99,7 @@ def install():
 
 def uninstall():
     path = covrd.HERDR_CONFIG
-    text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+    text = covrd.read_text(path, "")
     m = BLOCK.search(text)
     if not m:
         covrd.notify("no covr layout in config.toml")
@@ -122,5 +122,5 @@ if __name__ == "__main__":
     elif cmd == "uninstall":
         sys.exit(uninstall())
     else:
-        text = open(covrd.HERDR_CONFIG, encoding="utf-8").read() if os.path.exists(covrd.HERDR_CONFIG) else ""
+        text = covrd.read_text(covrd.HERDR_CONFIG, "")
         print(("installed" if BLOCK.search(text) else "not installed"), "·", covrd.HERDR_CONFIG, "·", variant(text))

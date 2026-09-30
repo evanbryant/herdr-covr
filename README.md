@@ -22,11 +22,11 @@ A minimal, attention-first Spaces/Agents sidebar for [herdr](https://herdr.dev).
 
 Features: attention-first sorting that doesn't flicker, the age pinned to the right edge, optional grouping by project or agent kind, sorting for Spaces (manual, alpha, recent, activity), pinned agents and spaces, and a settings popup.
 
-> **Status: early (0.2).** It's used daily on Linux. The lifecycle is covered by an end-to-end suite (`tests/e2e/run.sh`): herdr restarts, a server that goes away, several named sessions, disabling the plugin, the settings popup, and layout install/uninstall. Known limits are in [docs/triage-line-spec.md](docs/triage-line-spec.md#7-known-limits).
+> **Status: early (0.3).** It's used daily on Linux. The lifecycle is covered by an end-to-end suite (`tests/e2e/run.sh`): herdr restarts, a server that goes away, several named sessions, disabling the plugin, the settings popup, and layout install/uninstall. Known limits are in [docs/triage-line-spec.md](docs/triage-line-spec.md#7-known-limits).
 
 ## Requirements
 
-- herdr 0.9.1 or later (used daily on 0.9.1; the e2e suite runs on 0.9.3)
+- herdr 0.9.0 or later (the e2e suite passes on 0.9.0, 0.9.1 and 0.9.3)
 - Python 3.8 or later (standard library only)
 - Linux or macOS
 

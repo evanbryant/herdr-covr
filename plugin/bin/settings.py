@@ -84,7 +84,10 @@ def main(scr):
             cur = opt.get(key)
             i = vals.index(cur) if cur in vals else -1
             i = (i - 1) % len(vals) if k in (curses.KEY_LEFT, ord("h")) else (i + 1) % len(vals)
-            covrd.write_option(key, str(vals[i]).lower() if isinstance(vals[i], bool) else vals[i])
+            try:
+                covrd.write_option(key, str(vals[i]).lower() if isinstance(vals[i], bool) else vals[i])
+            except ValueError:
+                pass
             poke()
         elif k == ord("s"):
             if covrd.alive():
