@@ -18,7 +18,7 @@ ITEMS = [
     ("show_kind", "Show agent kind", ["never", "auto", "always"]),
     ("show_task", "Second-line text", ["attention", "all", "never"]),
     ("disambiguate", "Task tags on look-alike rows", [True, False]),
-    ("stale_after", "Idle → stale moon after", ["15m", "30m", "1h", "2h", "4h"]),
+    ("stale_after", "Idle → asleep (⏾) after", ["15m", "30m", "1h", "2h", "4h"]),
 ]
 HELP = {
     "group_by": "project: projects ordered by their best agent · kind: by agent type",
@@ -29,7 +29,7 @@ HELP = {
     "show_kind": "auto = only while more than one kind is running",
     "show_task": "attention = blocked reason + what finished",
     "disambiguate": "adds 1–2 words of the task when two rows would look identical",
-    "stale_after": "idle longer than this dims to ☾ and sinks",
+    "stale_after": "idle longer than this dims to ⏾ and sinks",
 }
 
 

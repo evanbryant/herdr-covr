@@ -13,7 +13,7 @@ This is how covr (plugin id `covr.sidebar`, version 0.3) draws herdr's sidebar a
   ↳ Bash(npm run migrate:up)      blocked only: what it is asking (red)
 ✓ web                       <1m
   ↳ Fix checkout redirect         finished and not yet seen: the task (teal)
-☾ docs                     2h1m   idle past stale_after: the whole row dims
+⏾ docs                     2h1m   idle past stale_after (asleep): the whole row dims
 ```
 
 - **One token:** the first line is a single token, `$head`, holding the glyph, the label, any extra parts and the age.
@@ -34,7 +34,7 @@ This is how covr (plugin id `covr.sidebar`, version 0.3) draws herdr's sidebar a
 | finished, not seen | `✓` | `#179299` / `#94e2d5`, plus the task line |
 | working | `◐` | `#c27c0e` / `#f9e2af` |
 | idle | `○` | `#40a02b` / `#a6e3a1` |
-| idle past `stale_after` | `☾` | `#9ca0b0` / `#7f849c`, dimmed |
+| asleep (idle past `stale_after`) | `⏾` | `#9ca0b0` / `#7f849c`, dimmed |
 | unknown | `·` | `#9ca0b0` / `#7f849c` |
 | pinned (any state) | ` ★` after the label | the state's colour |
 
@@ -143,7 +143,7 @@ Bind any of them in herdr's `config.toml` as `type = "plugin_action"`, `command 
 - **Clean undo:** uninstalling removes exactly what install added.
 - **Conflicts:** it refuses a config that would define the same tables twice.
 - **Rollback:** it restores the old file if `herdr server reload-config` fails.
-- **Older blocks:** a block written by an older covr version is recognised.
+- **Older blocks:** a block written by an older covr version is recognised. Run `install-layout` again after an upgrade, so the block's colour rules match the current glyphs (0.3.3 changed asleep from `☾` to `⏾`).
 
 ## Known limits
 

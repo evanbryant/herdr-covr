@@ -8,7 +8,7 @@ The terminal's default colours and 16-colour palette are catppuccin latte (light
 the herdr theme used for the capture; herdr itself draws with truecolor, which passes through as is.
 Open the page in any browser, or screenshot it headless (e.g. playwright: page.locator(".term").screenshot()).
 """
-import argparse, html, re
+import argparse, html, re, unicodedata
 
 THEMES = {
     "dark": dict(fg=(205, 214, 244), bg=(30, 30, 46), base16=[
@@ -85,6 +85,19 @@ def style(st, t):
     return s
 
 
+def cells(tok):
+    """Escape text for HTML, pinning every non-ASCII character to its terminal cell width. A browser draws
+    symbols its font lacks (⏾, braille blanks, …) from a fallback font at another width; a terminal never does."""
+    out = []
+    for ch in tok:
+        if ord(ch) < 128:
+            out.append(html.escape(ch))
+        else:
+            w = 2 if unicodedata.east_asian_width(ch) in "WF" else 1
+            out.append(f'<span class="c{w}">{html.escape(ch)}</span>')
+    return "".join(out)
+
+
 def sidebar_cols(text):
     plain = [re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", line) for line in text.split("\n")]
     counts = {}
@@ -109,11 +122,9 @@ def convert(text, t, cols=None, rows=None):
             tok = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", tok)
             if cols is not None:
                 tok = tok[:max(0, cols - col)]
-            # herdr pads rows with U+2800 (braille blank: renders empty, is not trimmed). Browser fonts give it
-            # a different width than the terminal did, so draw it as the plain space it looks like.
-            tok = tok.replace("\u2800", " ")
+            tok = tok.replace("\u2800", " ")  # herdr's row padding (braille blank): it looks like a space
             if tok:
-                segs.append(f'<span style="{style(st, t)}">{html.escape(tok)}</span>')
+                segs.append(f'<span style="{style(st, t)}">{cells(tok)}</span>')
                 col += len(tok)
         if cols is not None and col < cols:
             segs.append(" " * (cols - col))
@@ -144,6 +155,7 @@ def main():
 body{{margin:0;background:transparent}}
 .term{{display:inline-block;white-space:pre;font:15px/1.3 'DejaVu Sans Mono','Menlo',monospace;color:{fg};background:{bg};
 padding:14px 16px;border-radius:10px}}
+.c1,.c2{{display:inline-block;text-align:center;overflow:visible}} .c1{{width:1ch}} .c2{{width:2ch}}
 </style><div class="term">{body}</div>
 """
     with open(o.out, "w", encoding="utf-8") as f:
