@@ -1,4 +1,4 @@
-# >>> covr.sidebar (covr) — managed by the install-layout action; options live in the plugin config, not here
+# >>> covr.sidebar layout — managed by the install-layout action; options live in the plugin config, not here
 [ui.sidebar.spaces]
 row_gap = 0
 rows = [["state_icon", "workspace", { token = "$alert", fg = "#f38ba8", bold = true },

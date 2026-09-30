@@ -223,7 +223,7 @@ EOF
   act install-layout; local one; one=$(cat "$(cfg)")
   act install-layout; local two; two=$(cat "$(cfg)")
   local why=""
-  grep -q '^# >>> covr.sidebar (covr)' "$(cfg)" || why+="no block; "
+  grep -q '^# >>> covr.sidebar layout' "$(cfg)" || why+="no block; "
   grep -qi '#f38ba8' "$(cfg)" || why+="not the mocha variant; "
   [ "$one" = "$two" ] || why+="second install changed the file; "
   python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "$(cfg)" 2>/dev/null || why+="result is not valid TOML; "

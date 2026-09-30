@@ -3,7 +3,8 @@
 
 usage: layout.py install | uninstall | show
 
-The layout is one marked block (`# >>> covr.sidebar (covr)` … `# <<< covr.sidebar`).
+The layout is one marked block (`# >>> covr.sidebar layout` … `# <<< covr.sidebar`); any `# >>> covr.sidebar …`
+opening line other than the keys block counts, so blocks written by older versions are found too.
 Everything outside it, including a `covr.sidebar keys` block, is left byte-for-byte alone.
 Install replaces the block in place (idempotent) or appends it; uninstall removes exactly what
 install appended. Nothing is written when the result would be a config herdr rejects, and a
@@ -15,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import covrd  # noqa: E402
 
 LAYOUTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "layouts")
-BLOCK = re.compile(r"^# >>> covr\.sidebar \(covr\)[^\n]*\n.*?^# <<< covr\.sidebar[ \t]*\r?(?:\n|\Z)", re.M | re.S)
+BLOCK = re.compile(r"^# >>> covr\.sidebar(?! keys)[^\n]*\n.*?^# <<< covr\.sidebar[ \t]*\r?(?:\n|\Z)", re.M | re.S)
 LIGHT = ("latte", "light", "day", "dawn", "morning")
 # tables the block defines; a copy outside the block makes the file invalid TOML (duplicate table)
 OURS = re.compile(r"^[ \t]*\[[ \t]*ui\.sidebar\.(spaces|agents)[ \t]*\]", re.M)

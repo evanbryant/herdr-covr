@@ -1,4 +1,4 @@
-# covr for herdr
+# covr
 
 [![tests](https://github.com/evanbryant/herdr-covr/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/evanbryant/herdr-covr/actions/workflows/tests.yml)
 ![herdr](https://img.shields.io/badge/herdr-%E2%89%A5%200.9.0-5c58b2)
@@ -6,7 +6,7 @@
 ![platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macOS-555)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-A minimal, attention-first Spaces/Agents sidebar for [herdr](https://herdr.dev). Every agent is one line, state is carried by glyph shape and stoplight colour, and a second line appears only when it changes a decision (why it's blocked, what just finished).
+covr is a minimal, attention-first Spaces/Agents sidebar for [herdr](https://herdr.dev). Every agent is one line, state is carried by glyph shape and stoplight colour, and a second line appears only when it changes a decision (why it's blocked, what just finished).
 
 ```
 × api · auth-fix           2m
@@ -28,7 +28,7 @@ A minimal, attention-first Spaces/Agents sidebar for [herdr](https://herdr.dev).
 
 Features: attention-first sorting that doesn't flicker, the age pinned to the right edge, optional grouping by project or agent kind, sorting for Spaces (manual, alpha, recent, activity), pinned agents and spaces, and a settings popup.
 
-> **Status: early (0.3).** It's used daily on Linux, and CI runs the full suite on Linux and macOS. The lifecycle is covered by an end-to-end suite (`tests/e2e/run.sh`): herdr restarts, a server that goes away, several named sessions, disabling the plugin, the settings popup, and layout install/uninstall. Known limits are in [docs/triage-line-spec.md](docs/triage-line-spec.md#7-known-limits).
+> **Status: early (0.3).** CI runs the full suite on Linux and macOS. The lifecycle is covered by an end-to-end suite (`tests/e2e/run.sh`): herdr restarts, a server that goes away, several named sessions, disabling the plugin, the settings popup, and layout install/uninstall. Known limits are in [docs/spec.md](docs/spec.md#7-known-limits).
 
 ## Requirements
 
@@ -86,7 +86,7 @@ All actions: `settings`, `cycle-view`, `toggle-group`, `cycle-kind`, `toggle-lab
 
 ## Options
 
-Options are stored in `$(herdr plugin config-dir covr.sidebar)/config.toml`. Actions and the settings popup edit this file, and the daemon picks up changes within one tick. See [the spec](docs/triage-line-spec.md#4-options) for every option.
+Options are stored in `$(herdr plugin config-dir covr.sidebar)/config.toml`. Actions and the settings popup edit this file, and the daemon picks up changes within one tick. See [the spec](docs/spec.md#4-options) for every option.
 
 ## Privacy note
 

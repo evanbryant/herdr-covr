@@ -250,7 +250,7 @@ def write_option(key, value):
             raise ValueError(why)
     o[key] = value
     os.makedirs(CFG_DIR, exist_ok=True)
-    text = "# covr.sidebar (covr) options — edited by actions; the daemon picks changes up live\n"
+    text = "# covr options — edited by actions; the daemon picks changes up live\n"
     for k in DEFAULTS:
         v = o[k]
         text += f"{k} = {json.dumps(v) if not isinstance(v, bool) else str(v).lower()}\n"

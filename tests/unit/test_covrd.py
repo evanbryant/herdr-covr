@@ -436,7 +436,7 @@ class LayoutFile(unittest.TestCase):
         self.write(self.ORIG)
         self.assertEqual(layout.install(), 0)
         once = self.read()
-        self.assertIn("# >>> covr.sidebar (covr)", once)
+        self.assertIn("# >>> covr.sidebar layout", once)
         self.assertIn("#d20f39", once)  # latte for a latte theme
         self.assertEqual(layout.install(), 0)
         self.assertEqual(self.read(), once)
@@ -467,6 +467,8 @@ class LayoutFile(unittest.TestCase):
         self.assertTrue(layout.BLOCK.search(("a = 1\n\n" + blk).replace("\n", "\r\n")))
         self.assertTrue(layout.BLOCK.search("a = 1\n\n" + blk.rstrip("\n")))
         self.assertFalse(layout.BLOCK.search(self.ORIG))  # the keys block is not ours
+        old = blk.replace("# >>> covr.sidebar layout", "# >>> covr.sidebar (older name) — herdr sidebar layout", 1)
+        self.assertTrue(layout.BLOCK.search("a = 1\n\n" + old))  # blocks from older versions are still found
 
 
 class Contract(unittest.TestCase):
@@ -486,7 +488,7 @@ class Contract(unittest.TestCase):
         m = self.manifest()
         for k in ("id", "name", "version", "min_herdr_version"):
             self.assertIn(k, m)
-        self.assertEqual(m["min_herdr_version"], "0.9.0")  # the user's live server is 0.9.1: never raise this blindly
+        self.assertEqual(m["min_herdr_version"], "0.9.0")  # CI proves 0.9.0; raising it makes older servers refuse the plugin
         ids = [a["id"] for a in m["actions"]] + [p["id"] for p in m["panes"]]
         self.assertTrue(all("." not in i for i in ids))
         for e in m["events"]:

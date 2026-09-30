@@ -1,4 +1,4 @@
-# covr — design spec (covr.sidebar 0.2, as implemented)
+# covr — design spec (covr.sidebar 0.3, as implemented)
 
 Minimal, attention-first herdr sidebar. Every space and every agent is one line; state is carried by glyph shape and stoplight colour; text gets a second line only when it changes a decision. Implemented as a herdr plugin (`plugin/`) — a Python daemon that pushes display tokens, one `agent.view.set` view, and a sidebar layout block in herdr's `config.toml` that is installed once and never rewritten by options.
 
@@ -112,7 +112,7 @@ File: `~/.config/herdr/plugins/config/covr.sidebar/config.toml` (actions rewrite
   - **Every token is at most 80 characters** (herdr's cap). Long text is shortened with `…`.
   - **Space sorting backs off:** re-applying the same order 3 times within 60 s (someone keeps moving spaces back) pauses sorting for 5 minutes.
   - **State hygiene:** the transcript cache stores hashed keys only, and every cache is pruned to live panes and workspaces. `covrd.log` rotates at 256 KB, keeping one old log.
-- `plugin/bin/layout.py` and `plugin/layouts/{latte,mocha}.toml`: the sidebar block, managed between the `# >>> covr.sidebar (covr)` and `# <<< covr.sidebar` markers.
+- `plugin/bin/layout.py` and `plugin/layouts/{latte,mocha}.toml`: the sidebar block, managed between the `# >>> covr.sidebar layout` and `# <<< covr.sidebar` markers.
   - Install is idempotent, and uninstall removes exactly what install added.
   - A config that would define our tables twice is refused, and nothing is written.
   - If `server reload-config` fails, the old file is restored.
