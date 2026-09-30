@@ -39,7 +39,7 @@ FIGHT_MOVES, FIGHT_WINDOW, FIGHT_PAUSE = 3, 60, 300  # re-applying one order 3x 
 ZW = "​"
 
 DEFAULTS = {"layout": "auto", "label": "space", "show_kind": "never", "group_by": "none", "show_task": "attention",
-            "disambiguate": True, "stale_after": "1h", "view": "triage", "space_sort": "manual", "show_tab": "named", "tick_seconds": 5}
+            "disambiguate": True, "stale_after": "30m", "view": "triage", "space_sort": "manual", "show_tab": "named", "tick_seconds": 5}
 CYCLES = {"view": ["triage", "needs me", "here+"], "group_by": ["none", "project", "kind"],
           "show_kind": ["never", "auto", "always"], "label": ["space", "task"],
           "show_task": ["attention", "all", "never"], "space_sort": ["manual", "alpha", "recent", "activity"],

@@ -79,7 +79,7 @@ File: `~/.config/herdr/plugins/config/covr.sidebar/config.toml` (actions rewrite
 | `show_kind` | **never** · auto (only when >1 kind is live) · always |
 | `show_task` | **attention** (blocked reason + done summary) · all · never |
 | `disambiguate` | **true** · false |
-| `stale_after` | **1h** |
+| `stale_after` | **30m** (1m–30d, e.g. 45m, 2h) |
 | `view` | **triage** · needs me · here+ |
 | `tick_seconds` | **5** |
 | `layout` | **auto** (light themes get latte colours, others mocha) · light · dark. Used by `install-layout`. |
