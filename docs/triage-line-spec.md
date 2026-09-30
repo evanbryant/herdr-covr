@@ -46,7 +46,7 @@ Mechanism for both: the daemon pushes `grp` = group index (`0001`…); view sort
 ### Identity without the agent kind
 - Default label = the space; the kind (`claude`) is never shown unless `show_kind` asks for it.
 - **Disambiguation**: when two agents in the same space would render identically (same visible glyph), both get a 1–2 word task tag (`☾ web · docs refresh` / `☾ web · Login bug`). Tags never cut words.
-- `label = "task"` swaps the space for the agent's task title.
+- `label = "task"` swaps the space for the agent's task title. The title is then the row itself, so nothing repeats it: the done and `all` second rows, the look-alike tag and the tab name are left out. The blocked reason still shows.
 - Task titles come from herdr's `terminal_title_stripped` (Claude Code sets it to the session title).
 
 ### Views

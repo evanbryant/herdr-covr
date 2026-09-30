@@ -5,8 +5,9 @@
 # env: HERDR_BIN   herdr binary (default: `command -v herdr`)
 #      PLUGIN_DIR  plugin under test (default: ../../plugin)
 #      E2E_ROOT    sandbox root; keep it short, unix sockets must stay < 108 chars (default: /tmp/covr-e2e)
+#      PYTHON      interpreter the sandboxed herdr runs the plugin with, e.g. a python3.8 (default: python3 on PATH)
 # tests: single tokens restart gone sessions disable popup notoml layout
-#        events width seq cap validate hygiene fight reload   (default: all)
+#        events width seq cap validate hygiene fight reload gitsafe   (default: all)
 # Linux only (reads /proc to attribute daemons to the sandbox).
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -23,6 +24,7 @@ no() { echo "FAIL $1 — $2"; FAIL=$((FAIL + 1)); FAILED+=("$1"); }
 
 mkdir -p "$ROOT/bin"
 ln -sfn "$HERDR_BIN" "$ROOT/bin/herdr"
+if [ -n "${PYTHON:-}" ]; then ln -sfn "$PYTHON" "$ROOT/bin/python3"; else rm -f "$ROOT/bin/python3"; fi
 cp "$HERE/bin/hsock" "$ROOT/bin/hsock"
 cat > "$ROOT/sb.sh" <<EOF
 #!/usr/bin/env bash
@@ -352,7 +354,25 @@ t_reload() {  # updating the plugin's files in place restarts the running daemon
   else no reload "daemons before=$before after=$after, heads $(heads)"; fi
 }
 
-ALL="single tokens restart gone sessions disable popup notoml layout events width seq cap validate hygiene fight reload"
+t_gitsafe() { # a repo's own git config can't run commands through the daemon's background `git status`
+  fresh
+  until_t 15 all_heads >/dev/null
+  sb 'mkdir -p ~/r/hostile && cd ~/r/hostile && git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m i \
+      && echo x > f && git add f && git -c user.email=t@t -c user.name=t commit -qm f && echo y >> f \
+      && git config core.fsmonitor "sh -c \"touch $HOME/PWNED\" #"
+      herdr workspace create --cwd ~/r/hostile --label hostile --no-focus >/dev/null'
+  local w; w=$(sb 'hsock workspace.list' | python3 -c 'import json, sys
+print([x["workspace_id"] for x in json.load(sys.stdin)["result"]["workspaces"] if x["label"] == "hostile"][0])')
+  for p in $(daemons); do kill "$p"; done; until_t 5 zero; act start      # a fresh daemon checks dirty state at once
+  until_t 15 eval 'sb "hsock workspace.list" | grep -q "\"dirty\":\"±\""'
+  local dirty; dirty=$(sb 'hsock workspace.list' | python3 -c 'import json, sys
+print([(x.get("tokens") or {}).get("dirty") for x in json.load(sys.stdin)["result"]["workspaces"] if x["workspace_id"] == sys.argv[1]][0])' "$w")
+  if [ -e "$B/home/PWNED" ]; then no gitsafe "the repo's core.fsmonitor ran"
+  elif [ "$dirty" != "±" ]; then no gitsafe "dirty marker missing ($dirty)"
+  else ok gitsafe; fi
+}
+
+ALL="single tokens restart gone sessions disable popup notoml layout events width seq cap validate hygiene fight reload gitsafe"
 for t in ${*:-$ALL}; do "t_$t"; done
 [ -n "${KEEP:-}" ] || down
 [ -n "${KEEP:-}" ] || for p in $(daemons); do kill "$p" 2>/dev/null; done

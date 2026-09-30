@@ -51,7 +51,7 @@ TOKENS = ["pin", "head", "age", "age_stale", "kind", "tag", "wait", "done", "tas
 
 
 def log(*a):
-    os.makedirs(RUN_DIR, exist_ok=True)
+    os.makedirs(RUN_DIR, mode=0o700, exist_ok=True)
     try:
         if os.path.getsize(LOG) > LOG_MAX:
             os.replace(LOG, LOG + ".1")  # one rotation: the previous log is kept, older ones dropped
@@ -264,9 +264,9 @@ def write_atomic(path, text):
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
     try:
-        os.chmod(tmp, os.stat(path).st_mode & 0o777)
+        os.chmod(tmp, os.stat(path).st_mode & 0o777)  # keep an existing file's mode (herdr's config.toml)
     except OSError:
-        pass
+        os.chmod(tmp, 0o600)  # new plugin files: owner-only
     os.replace(tmp, path)
 
 
@@ -629,7 +629,10 @@ def compute(opt, memo):
             if not cwd:
                 continue
             try:
-                r = subprocess.run(["git", "-C", cwd, "status", "--porcelain", "--untracked-files=no"],
+                # a repo's own config must not run commands here (core.fsmonitor executes on status),
+                # and a background status must never take index.lock from under the user's git
+                r = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", cwd,
+                                    "status", "--porcelain", "--untracked-files=no"],
                                    capture_output=True, text=True, timeout=2)
                 if r.returncode == 0 and r.stdout.strip():
                     memo["dirty"][w["workspace_id"]] = True

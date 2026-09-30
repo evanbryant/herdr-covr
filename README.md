@@ -27,7 +27,7 @@ Features: attention-first sorting that doesn't flicker, the age pinned to the ri
 ## Requirements
 
 - herdr 0.9.0 or later (the e2e suite passes on 0.9.0, 0.9.1 and 0.9.3)
-- Python 3.8 or later (standard library only)
+- Python 3.8 or later, standard library only (the e2e suite also runs the plugin under 3.8)
 - Linux or macOS
 
 ## Install
