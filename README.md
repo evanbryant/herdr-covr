@@ -1,5 +1,11 @@
 # covr for herdr
 
+[![tests](https://github.com/evanbryant/herdr-covr/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/evanbryant/herdr-covr/actions/workflows/tests.yml)
+![herdr](https://img.shields.io/badge/herdr-%E2%89%A5%200.9.0-5c58b2)
+![python](https://img.shields.io/badge/python-%E2%89%A5%203.8-3776ab)
+![platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macOS-555)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 A minimal, attention-first Spaces/Agents sidebar for [herdr](https://herdr.dev). Every agent is one line, state is carried by glyph shape and stoplight colour, and a second line appears only when it changes a decision (why it's blocked, what just finished).
 
 ```
@@ -22,7 +28,7 @@ A minimal, attention-first Spaces/Agents sidebar for [herdr](https://herdr.dev).
 
 Features: attention-first sorting that doesn't flicker, the age pinned to the right edge, optional grouping by project or agent kind, sorting for Spaces (manual, alpha, recent, activity), pinned agents and spaces, and a settings popup.
 
-> **Status: early (0.3).** It's used daily on Linux. The lifecycle is covered by an end-to-end suite (`tests/e2e/run.sh`): herdr restarts, a server that goes away, several named sessions, disabling the plugin, the settings popup, and layout install/uninstall. Known limits are in [docs/triage-line-spec.md](docs/triage-line-spec.md#7-known-limits).
+> **Status: early (0.3).** It's used daily on Linux, and CI runs the full suite on Linux and macOS. The lifecycle is covered by an end-to-end suite (`tests/e2e/run.sh`): herdr restarts, a server that goes away, several named sessions, disabling the plugin, the settings popup, and layout install/uninstall. Known limits are in [docs/triage-line-spec.md](docs/triage-line-spec.md#7-known-limits).
 
 ## Requirements
 
@@ -85,6 +91,16 @@ Options are stored in `$(herdr plugin config-dir covr.sidebar)/config.toml`. Act
 ## Privacy note
 
 The daemon reads the visible text of blocked panes to show why they're waiting. For agents that were already running when it started, it also estimates how long they've been in their current state by searching Claude Code transcripts under `~/.claude*/projects` for the session title and using the matching file's modification time. Settings live in the plugin config dir and runtime state in herdr's plugin state dir; nothing leaves your machine.
+
+## Tests
+
+```sh
+python3 -m unittest discover -s tests/unit        # the daemon's logic, in well under a second
+tests/e2e/run.sh                                  # lifecycle against an isolated herdr (needs tmux)
+HERDR_BIN=/path/to/herdr PYTHON=python3.8 tests/e2e/run.sh restart sessions   # a given herdr / Python, chosen tests
+```
+
+The e2e suite never touches your own herdr: every run gets its own HOME, XDG dirs, socket and tmux server. CI runs the unit tests on Linux and macOS (Python 3.8–3.13), and the e2e suite on herdr 0.9.0, 0.9.1 and 0.9.3 (Linux) and 0.9.3 (macOS).
 
 ## License
 
