@@ -126,7 +126,9 @@ t_single() {  # G3: a burst of concurrent spawns leaves exactly one daemon per s
   for p in $(daemons); do kill "$p"; done; until_t 5 zero
   # herdr serialises action invocations, but event hooks run concurrently: race raw spawns like they do
   SOCK=$SOCK1 sb "cd '$PLUGIN_DIR'; for i in \$(seq 12); do python3 bin/covrd.py spawn >/dev/null & done; wait"
-  sleep 3
+  # spawners that lose the race exit within ~1 s of starting (slow CI runners start them late): a second
+  # daemon that really holds the lock would never go away, so wait for things to settle, then count
+  until_t 10 eval '[ "$(ndaemons)" = 1 ]'
   local n; n=$(ndaemons)
   [ "$n" = 1 ] && ok single || no single "$n daemons for one session"
 }
