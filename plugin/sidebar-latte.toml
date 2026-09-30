@@ -1,0 +1,26 @@
+# >>> covr.sidebar (covr) — herdr sidebar layout; options live in the plugin config, not here
+[theme.custom]
+surface_dim = "#ccd0da"   # make the spaces/agents divider visible on latte (state colours stay herdr-native)
+
+[ui.sidebar.spaces]
+row_gap = 0
+rows = [["state_icon", "workspace", { token = "$alert", fg = "#d20f39", bold = true },
+         { token = "branch", fg = "#8c8fa1" }, "git_status", { token = "$dirty", fg = "#fe640b" }, { token = "$spin", fg = "#df8e1d" }]]
+
+[ui.sidebar.agents]
+row_gap = 0
+rows = [
+  [{ token = "$head", fg = "#4c4f69", rules = [
+      { starts_with = "×", fg = "#d20f39", bold = true },
+      { starts_with = "✓", fg = "#179299" },
+      { starts_with = "◐", fg = "#c27c0e" },
+      { starts_with = "○", fg = "#40a02b" },
+      { starts_with = "☾", fg = "#9ca0b0", dim = true },
+      { starts_with = "·", fg = "#9ca0b0" } ] },
+   ],
+  [{ token = "$wait", fg = "#d20f39", bold = true }],
+  [{ token = "$done", fg = "#179299" }],
+  [{ token = "$task", fg = "#9ca0b0" }],
+  [{ token = "$rule", fg = "#bcc0cc" }],
+]
+# <<< covr.sidebar

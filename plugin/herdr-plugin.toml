@@ -1,0 +1,85 @@
+id = "covr.sidebar"
+name = "covr"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Minimal attention-first Spaces/Agents sidebar: one line per entry, shape glyphs, kind optional"
+platforms = ["linux", "macos"]
+
+# Daemon: spawned once after restore; no-op if already running.
+[[startup]]
+command = ["python3", "bin/covrd.py", "spawn"]
+
+# Hooks only poke the daemon awake (it re-reads herdr state itself).
+[[events]]
+on = "pane.agent_status_changed"
+command = ["python3", "bin/covrd.py", "poke"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["python3", "bin/covrd.py", "poke"]
+
+[[events]]
+on = "pane.closed"
+command = ["python3", "bin/covrd.py", "poke"]
+
+[[events]]
+on = "workspace.created"
+command = ["python3", "bin/covrd.py", "poke"]
+
+[[events]]
+on = "worktree.opened"
+command = ["python3", "bin/covrd.py", "poke"]
+
+[[actions]]
+id = "cycle-view"
+title = "covr: cycle view (triage / needs me / here+)"
+contexts = ["global"]
+command = ["python3", "bin/covrd.py", "set", "view", "cycle"]
+
+[[actions]]
+id = "toggle-group"
+title = "covr: cycle grouping (none / project / kind)"
+contexts = ["global"]
+command = ["python3", "bin/covrd.py", "set", "group_by", "cycle"]
+
+[[actions]]
+id = "cycle-kind"
+title = "covr: cycle show kind (never / auto / always)"
+contexts = ["global"]
+command = ["python3", "bin/covrd.py", "set", "show_kind", "cycle"]
+
+[[actions]]
+id = "toggle-label"
+title = "covr: toggle label (space / task)"
+contexts = ["global"]
+command = ["python3", "bin/covrd.py", "set", "label", "cycle"]
+
+[[actions]]
+id = "cycle-space-sort"
+title = "covr: cycle space sort (manual / alpha / recent / activity)"
+contexts = ["global"]
+command = ["python3", "bin/covrd.py", "set", "space_sort", "cycle"]
+
+[[actions]]
+id = "pin-agent"
+title = "covr: pin / unpin the focused agent"
+contexts = ["pane", "global"]
+command = ["python3", "bin/covrd.py", "pin", "agents"]
+
+[[actions]]
+id = "pin-space"
+title = "covr: pin / unpin the current space"
+contexts = ["workspace", "global"]
+command = ["python3", "bin/covrd.py", "pin", "spaces"]
+
+[[actions]]
+id = "start"
+title = "covr: start daemon"
+contexts = ["global"]
+command = ["python3", "bin/covrd.py", "spawn"]
+
+[[actions]]
+id = "stop"
+title = "covr: stop daemon and clear tokens"
+contexts = ["global"]
+command = ["python3", "bin/covrd.py", "stop"]
