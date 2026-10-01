@@ -46,16 +46,23 @@ def herdr(*args, check=False, timeout=30):
         return {"text": r.stdout, "rc": r.returncode}
 
 
-def call(method, params=None):
-    with open("\\\\.\\pipe\\" + SOCK, "r+b", buffering=0) as f:
-        f.write((json.dumps({"id": "t", "method": method, "params": params or {}}) + "\n").encode())
-        buf = b""
-        while not buf.endswith(b"\n"):
-            c = f.read(1 << 16)
-            if not c:
-                break
-            buf += c
-    return json.loads(buf)
+def call(method, params=None, tries=6):
+    # between two clients a pipe server briefly has no free instance: retry before calling it gone
+    for attempt in range(tries):
+        try:
+            with open("\\\\.\\pipe\\" + SOCK, "r+b", buffering=0) as f:
+                f.write((json.dumps({"id": "t", "method": method, "params": params or {}}) + "\n").encode())
+                buf = b""
+                while not buf.endswith(b"\n"):
+                    c = f.read(1 << 16)
+                    if not c:
+                        break
+                    buf += c
+            return json.loads(buf)
+        except OSError:
+            if attempt == tries - 1:
+                raise
+            time.sleep(0.05)
 
 
 def until(seconds, fn):
@@ -102,7 +109,7 @@ def kill_daemons():
 
 
 def server_up():
-    return "result" in call("ping")
+    return "result" in call("ping", tries=1)
 
 
 def start_server():
@@ -127,6 +134,13 @@ def _pings():
 def heads():
     a = call("agent.list")["result"]["agents"]
     return sum(1 for x in a if (x.get("tokens") or {}).get("head")), len(a)
+
+
+def safe(fn):
+    try:
+        return fn()
+    except Exception as e:
+        return repr(e)
 
 
 def all_heads():
@@ -271,7 +285,7 @@ def t_restart():
     stop_server()
     start_server()
     report_agents()
-    ok("restart") if until(30, all_heads) else no("restart", f"heads after restart {heads()}; log: {log_text()[-300:]}")
+    ok("restart") if until(40, all_heads) else no("restart", f"heads after restart {safe(heads)}; log: {log_text()[-300:]}")
 
 
 def t_gone():

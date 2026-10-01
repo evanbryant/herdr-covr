@@ -131,11 +131,14 @@ def call(method, params=None):
                             break
                         buf += c
                 break
-            except FileNotFoundError:
-                raise  # no server: the pipe does not exist
             except OSError as e:
-                if getattr(e, "winerror", None) != 231 or attempt == 19:  # ERROR_PIPE_BUSY: all instances in use
+                # A pipe server makes a new instance after each client, so for a moment there is none
+                # (file not found) or all are taken (231, ERROR_PIPE_BUSY). Retry briefly before deciding
+                # the server is gone: 0.3 s for "not found", 1 s for "busy".
+                missing = isinstance(e, FileNotFoundError)
+                if not (missing or getattr(e, "winerror", None) == 231) or attempt >= (5 if missing else 19):
                     raise
+                buf = b""
                 time.sleep(0.05)
     else:
         s = socket.socket(socket.AF_UNIX)
