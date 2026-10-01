@@ -3,7 +3,7 @@
 # (own HOME / XDG dirs / socket, driven through tmux). Never touches your live herdr.
 #
 # env: HERDR_BIN   herdr binary (default: `command -v herdr`)
-#      PLUGIN_DIR  plugin under test (default: ../../plugin)
+#      PLUGIN_DIR  plugin under test (default: the repo root)
 #      E2E_ROOT    sandbox root; keep it short, unix sockets must stay < 108 chars (default: /tmp/covr-e2e)
 #      PYTHON      interpreter the sandboxed herdr runs the plugin with, e.g. a python3.8 (default: python3 on PATH)
 # tests: single tokens restart gone sessions disable popup notoml layout
@@ -11,7 +11,7 @@
 # Linux and macOS (daemons are attributed to the sandbox by their environment: /proc on Linux, ps -E on macOS).
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-PLUGIN_DIR=${PLUGIN_DIR:-$(cd "$HERE/../../plugin" && pwd)}
+PLUGIN_DIR=${PLUGIN_DIR:-$(cd "$HERE/../.." && pwd)}
 HERDR_BIN=${HERDR_BIN:-$(command -v herdr)}
 ROOT=${E2E_ROOT:-/tmp/covr-e2e}
 B=$ROOT/sb

@@ -20,6 +20,7 @@ ITEMS = [
     ("show_task", "Second-line text", ["attention", "all", "never"]),
     ("disambiguate", "Task tags on look-alike rows", [True, False]),
     ("stale_after", "Idle → asleep (⏾) after", ["15m", "30m", "1h", "2h", "4h"]),
+    ("age_source", "Ages of already-running agents", ["observed", "claude-transcripts"]),
 ]
 HELP = {
     "group_by": "project: projects ordered by their best agent · kind: by agent type",
@@ -31,6 +32,7 @@ HELP = {
     "show_task": "attention = blocked reason + what finished",
     "disambiguate": "adds 1–2 words of the task when two rows would look identical",
     "stale_after": "idle longer than this dims to ⏾ and sinks",
+    "age_source": "observed = no age until a state changes · claude-transcripts = look it up in ~/.claude*",
 }
 FOOTER = "↑↓ select   ←→/enter change   s start/stop daemon   q close"
 
@@ -48,7 +50,7 @@ def screen(sel, height):
         lines.append((f"{label:<30} ‹ {show(opt.get(key))} ›", "reverse" if i == sel else "normal"))
     lines += [("", "normal"), (HELP.get(ITEMS[sel][0], ""), "dim"), ("", "normal"),
               (f"pinned: {len(pins['agents'])} agents · {len(pins['spaces'])} spaces"
-               "   (prefix+m pin agent · prefix+y pin space)", "dim")]
+               "   (actions: pin-agent, pin-space)", "dim")]
     lines = lines[:max(1, height - 1)]
     lines += [("", "normal")] * max(0, height - 1 - len(lines))
     return lines + [(FOOTER, "dim")]

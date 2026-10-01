@@ -43,7 +43,7 @@ This is how covr (plugin id `covr.sidebar`, version 0.3) draws herdr's sidebar a
 The agents list uses one herdr Agent view.
 - **Sort:** pinned first, then attention (blocked > finished > working > idle), then the most recent state change.
 - **Stable ranking:** an agent's rank is set by the moment it entered its current state, so rows move only when a state changes, never as ages tick.
-- **Age source:** the age is time in the current state. For agents already running when the daemon starts, the start time comes from the newest Claude Code transcript that mentions the session title. After that, the daemon observes changes itself and remembers them across restarts.
+- **Age source:** the age is time in the current state, as the daemon observes it; it remembers start times across restarts. An agent already in its state when the daemon first sees it has no age until its state changes. With `age_source = claude-transcripts` (opt-in), that start time is taken from the newest Claude Code transcript that mentions the session title.
 
 ### Grouping
 
@@ -113,6 +113,7 @@ Options are stored in `$(herdr plugin config-dir covr.sidebar)/config.toml`. The
 | `stale_after` | `30m`; any duration from `1m` to `30d` |
 | `tick_seconds` | `5`; from 2 to 60 |
 | `layout` | `auto` · `light` · `dark` (used by `install-layout`) |
+| `age_source` | `observed` · `claude-transcripts` (opt-in: reads transcript files under `~/.claude*/projects`) |
 
 ## Actions
 
@@ -126,7 +127,7 @@ Bind any of them in herdr's `config.toml` as `type = "plugin_action"`, `command 
 
 ## Daemon
 
-`plugin/bin/covrd.py` is a Python standard-library daemon, one per herdr session, keyed by the session's socket.
+`bin/covrd.py` is a Python standard-library daemon, one per herdr session, keyed by the session's socket.
 
 - **Updates:** on every tick (5 s), and immediately when a hook fires. The hooks are agent status and detection, pane focus and close, workspace create, close, rename, focus and reorder, tab rename, and worktree open. Bursts are merged into at most one update per 0.5 s, and a hook costs about 15 ms (`bin/poke.py`).
 - **Diffing:** it reads `agent.list`, `workspace.list` and `tab.list`, and sends only changed tokens (`report-metadata --source covr --seq …`).
@@ -138,7 +139,7 @@ Bind any of them in herdr's `config.toml` as `type = "plugin_action"`, `command 
 - **Sidebar width:** read from this session's herdr client preferences (the width you dragged to), else `ui.sidebar_width`, else 26.
 - **State:** stored under the plugin's state directory, in `s/<session hash>/`. New files are readable only by you. Cached transcript lookups are stored as hashes and pruned to live panes, and the log rotates at 256 KB.
 
-`plugin/bin/layout.py` manages the block between `# >>> covr.sidebar layout` and `# <<< covr.sidebar` in herdr's `config.toml`:
+`bin/layout.py` manages the block between `# >>> covr.sidebar layout` and `# <<< covr.sidebar` in herdr's `config.toml`:
 - **Idempotent:** installing twice changes nothing.
 - **Clean undo:** uninstalling removes exactly what install added.
 - **Conflicts:** it refuses a config that would define the same tables twice.

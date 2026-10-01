@@ -8,14 +8,14 @@ signals, detached daemons and Windows paths. The settings popup needs a terminal
 covered here.
 
 env: HERDR_BIN   herdr.exe (default: herdr on PATH)
-     PLUGIN_DIR  plugin under test (default: ../../plugin)
+     PLUGIN_DIR  plugin under test (default: the repo root)
      E2E_ROOT    sandbox root (default: %TEMP%\\covr-e2e)
 tests: tokens single events restart gone disable layout validate reload gitsafe   (default: all)
 """
 import json, os, shutil, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PLUGIN_DIR = os.path.abspath(os.environ.get("PLUGIN_DIR") or os.path.join(HERE, "..", "..", "plugin"))
+PLUGIN_DIR = os.path.abspath(os.environ.get("PLUGIN_DIR") or os.path.join(HERE, "..", ".."))
 HERDR_BIN = os.environ.get("HERDR_BIN") or shutil.which("herdr") or "herdr"
 ROOT = os.path.abspath(os.environ.get("E2E_ROOT") or os.path.join(os.environ.get("TEMP", "."), "covr-e2e"))
 B = os.path.join(ROOT, "sb")

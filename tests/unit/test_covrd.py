@@ -14,7 +14,7 @@ for k, sub in (("HOME", "home"), ("XDG_CONFIG_HOME", "config"), ("XDG_STATE_HOME
     os.environ[k] = os.path.join(_TMP, sub)
     os.makedirs(os.environ[k], exist_ok=True)
 os.environ["HERDR_SOCKET_PATH"] = os.path.join(_TMP, "none", "herdr.sock")
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "plugin", "bin"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "bin"))
 import covrd  # noqa: E402
 import layout  # noqa: E402
 
@@ -390,6 +390,21 @@ class Lifecycle(unittest.TestCase):
         memo["live"] = {}
         self.assertFalse(covrd.lost_tokens(memo))  # the pane is gone, not lost
 
+    def test_transcripts_are_only_read_when_opted_in(self):
+        looked = []
+        saved, covrd.transcript_mtime = covrd.transcript_mtime, lambda *a: looked.append(a) or 1_000_000.0
+        saved_call = covrd.call
+        covrd.call = FakeHerdr([agent("p1", "w1", "idle", title="Docs refresh")], [space("w1", "web", 1)])
+        try:
+            out, _, _ = covrd.compute(opts(), {"dirty_at": 1e18})
+            self.assertEqual(looked, [])                       # default: nothing outside herdr is read
+            self.assertEqual(out["p1"]["head"], "○ web")      # so there is no age yet
+            out, _, _ = covrd.compute(opts(age_source="claude-transcripts"), {"dirty_at": 1e18})
+            self.assertEqual(len(looked), 1)
+            self.assertNotEqual(out["p1"]["head"], "○ web")
+        finally:
+            covrd.transcript_mtime, covrd.call = saved, saved_call
+
     def test_tcache_keys_are_hashes(self):
         k = covrd.tkey("/work/secret-repo", "Secret title")
         self.assertTrue(k.startswith("h:"))
@@ -506,7 +521,7 @@ class LayoutFile(unittest.TestCase):
 
 
 class Contract(unittest.TestCase):
-    ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "plugin")
+    ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
     EVENTS = {"workspace.created", "workspace.updated", "workspace.closed", "workspace.renamed", "workspace.moved",
               "workspace.reordered", "workspace.focused", "worktree.created", "worktree.opened", "worktree.removed",
               "tab.created", "tab.closed", "tab.renamed", "tab.moved", "tab.focused", "pane.created", "pane.closed",

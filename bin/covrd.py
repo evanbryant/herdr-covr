@@ -62,12 +62,13 @@ MIN_GAP = 0.5         # seconds between recomputes when hooks fire in bursts (pa
 FIGHT_MOVES, FIGHT_WINDOW, FIGHT_PAUSE = 3, 60, 300  # re-applying one order 3x in 60 s pauses space sorting 5 min
 ZW = "​"
 
-DEFAULTS = {"layout": "auto", "label": "space", "show_kind": "never", "group_by": "none", "show_task": "attention",
+DEFAULTS = {"layout": "auto", "age_source": "observed", "label": "space", "show_kind": "never", "group_by": "none", "show_task": "attention",
             "disambiguate": True, "stale_after": "30m", "view": "triage", "space_sort": "manual", "show_tab": "named", "tick_seconds": 5}
 CYCLES = {"view": ["triage", "needs me", "here+"], "group_by": ["none", "project", "kind"],
           "show_kind": ["never", "auto", "always"], "label": ["space", "task"],
           "show_task": ["attention", "all", "never"], "space_sort": ["manual", "alpha", "recent", "activity"],
-          "show_tab": ["named", "always", "never"], "layout": ["auto", "light", "dark"]}
+          "show_tab": ["named", "always", "never"], "layout": ["auto", "light", "dark"],
+          "age_source": ["observed", "claude-transcripts"]}
 GLYPH = {"blocked": "×", "done": "✓", "working": "◐", "idle": "○", "unknown": "·", "stale": "⏾"}
 PRIO = {"blocked": 4, "done": 3, "working": 2, "idle": 1, "unknown": 0}
 PINS = os.path.join(STATE_DIR, "pins.json")
@@ -556,9 +557,10 @@ def compute(opt, memo):
         if not rec or rec["seq"] != seq:
             first = rec is None
             start = now
-            if first:  # unknown start: best-effort from the transcript
-                t = transcript_mtime(a.get("cwd"), a.get("terminal_title_stripped"), tcache)
-                start = t if t else None
+            if first:  # already in this state when we first saw it: the start is unknown ...
+                start = None
+                if opt["age_source"] == "claude-transcripts":  # ... unless the user lets us look it up (opt-in)
+                    start = transcript_mtime(a.get("cwd"), a.get("terminal_title_stripped"), tcache) or None
             rec = seen[pid] = {"seq": seq, "since": start}
         age = None if rec["since"] is None else max(0, int(now - rec["since"]))
         stale = st == "idle" and age is not None and age >= stale_after

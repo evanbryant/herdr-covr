@@ -36,7 +36,7 @@ Both screenshots show the same session, captured headless from the test sandbox 
 Needs herdr 0.9.0+ and Python 3.8+ (standard library only), on Linux, macOS or Windows. On Windows, the `python3` command must start Python: for example `uv python install --default`, or a `python3` alias for the python.org install. herdr itself rates plugins on Windows as a preview.
 
 ```sh
-herdr plugin install evanbryant/herdr-covr/plugin
+herdr plugin install evanbryant/herdr-covr
 herdr plugin action invoke covr.sidebar.install-layout
 ```
 
@@ -86,8 +86,8 @@ covr's daemon does all three. It runs once per herdr session, updates when herdr
 
 **Privacy:**
 - For a blocked agent, covr reads that pane's visible text to show what it is asking.
-- For agents already running when covr starts, it estimates the age by finding the Claude Code transcript that contains the session title (under `~/.claude*/projects`) and using the file's modification time.
-- It stores only hashes of those lookups.
+- Ages come from what covr observes. An agent that was already running when covr started shows no age until its state changes.
+- **Opt-in:** `age_source = "claude-transcripts"` fills those ages in. covr then finds the Claude Code transcript that contains the session title (under `~/.claude*/projects`) and uses the file's modification time. It stores only hashes of those lookups.
 - Nothing leaves your machine.
 
 ## Tests
