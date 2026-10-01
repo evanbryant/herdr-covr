@@ -29,7 +29,7 @@ HELP = {
     "view": "needs me = blocked + done · here+ = this space + anything needing you",
     "label": "what identifies an agent row",
     "show_tab": "named = only tabs you renamed (auto-numbered tabs hidden)",
-    "show_kind": "auto = only while more than one kind is running",
+    "show_kind": "auto = only while more than one kind is running · always = on every row",
     "show_task": "attention = blocked reason + what finished",
     "disambiguate": "adds 1–2 words of the task when two rows would look identical",
     "stale_after": "idle longer than this dims to ⏾ and sinks",

@@ -22,7 +22,7 @@ This is how covr (plugin id `covr.sidebar`, version 0.3) draws herdr's sidebar a
 - **Truncation:** long labels are cut at a word boundary with `…`. The space name is shortened before the tab name, and the age is never cut. No token exceeds herdr's 80-character limit.
 - **Tabs:** tab names show only for tabs you renamed (`show_tab = named`); auto-numbered tabs are hidden.
 - **Look-alike rows:** when two agents in one space and tab would render the same, each gets one or two words of its task (`web · Docs refresh` / `web · Login bug`).
-- **Agent kind:** hidden by default (`show_kind`).
+- **Agent kind:** hidden by default (`show_kind`). `auto` shows it while more than one kind runs: on every row, or once per group under `group_by = kind`. `always` puts it on every row under any grouping.
 - **Task titles** are herdr's `terminal_title_stripped`; Claude Code sets it to the session title.
 - **`label = task`** replaces the space name with the task title. Anything that would repeat the title is then left out (the finished line, the `all` second lines, look-alike tags, tab names). The blocked line stays.
 

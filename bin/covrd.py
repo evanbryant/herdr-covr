@@ -677,14 +677,17 @@ def compute(opt, memo):
                 parts = [r["space"]] + ([task] if task else [])
             else:
                 parts = [BLANK * 2 + (task or r["space"])]
+            if opt["disambiguate"] and r["tab"] and len(dup[(r["space"], r["tab"], r["vis"])]) > 1 and r["title"]:
+                parts.append(short_tag(r["title"]))  # same named tab, same state: the tab alone can't tell them apart
             if show_kind:
                 parts.append(r["kind"])
         else:
             parts = [label] + ([r["tab"]] if r["tab"] and opt["label"] == "space" else [])
             if opt["disambiguate"] and opt["label"] == "space" and len(dup[(r["space"], r["tab"], r["vis"])]) > 1 and r["title"]:
                 parts.append(short_tag(r["title"]))
-            # kind-group labels only mean something when more than one kind is live
-            if (mode == "kind" and r["pid"] in firsts and len(kinds) > 1) or (show_kind and not group):
+            # grouped by kind, the first row names its group (only worth it when more than one kind is live);
+            # show_kind = always puts the kind on every row whatever the grouping
+            if opt["show_kind"] == "always" or (show_kind and mode != "kind") or (mode == "kind" and r["pid"] in firsts and len(kinds) > 1):
                 parts.append(r["kind"])
         body = " · ".join(parts) + (" ★" if r["pinned"] else "")
         t["head"] = pinned_row(glyph, body, fmt_age(r["age"]), width)

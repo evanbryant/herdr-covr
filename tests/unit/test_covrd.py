@@ -341,6 +341,21 @@ class Identity(Base):
             self.assertNotIn("claude", t["head"])
             self.assertNotIn("rule", t)
 
+    def test_regression_show_kind_always_works_under_every_grouping(self):
+        # with group_by = kind (and one kind running) "always" printed no kind at all
+        for kinds in ("claude", "codex"):
+            h = FakeHerdr([agent("p1", "w1", "idle"), agent("p2", "w2", "blocked", kind=kinds, seq=2),
+                           agent("p3", "w2", "working", kind=kinds, seq=3)],
+                          [space("w1", "api", 1), space("w2", "docs", 2)])
+            for group in ("none", "project", "kind"):
+                for label in ("space", "task"):
+                    out, *_ = self.run_compute(h, opt=opts(group_by=group, label=label, show_kind="always"))
+                    for pid, t in out.items():
+                        self.assertIn("claude" if pid == "p1" else kinds, t["head"], (kinds, group, label))
+                out, *_ = self.run_compute(h, opt=opts(group_by=group, show_kind="auto"))
+                named = sum(1 for t in out.values() if "claude" in t["head"] or "codex" in t["head"])
+                self.assertEqual(named, 0 if kinds == "claude" else 2 if group == "kind" else 3, (kinds, group))
+
     def test_kind_groups_label_first_row_and_close_with_a_rule(self):
         h = FakeHerdr([agent("p1", "w1", "idle", kind="claude"), agent("p2", "w2", "working", kind="codex", seq=2),
                        agent("p3", "w2", "idle", kind="codex", seq=3)],
@@ -356,6 +371,16 @@ class Identity(Base):
         out, *_ = self.run_compute(h)
         self.assertEqual(self.text(out["p1"]["head"]), "○ web · Docs refresh")
         self.assertEqual(self.text(out["p2"]["head"]), "○ web · Login bug")
+
+    def test_look_alikes_in_one_named_tab_get_tags_under_project_grouping(self):
+        h = FakeHerdr([agent("p1", "w1", "idle", title="Docs refresh"), agent("p2", "w1", "idle", seq=2, title="Login bug"),
+                       agent("p3", "w1", "idle", seq=3, title="Cache rewrite")],
+                      [space("w1", "web", 1)], [{"tab_id": "w1:t1", "label": "review"}])
+        out, *_ = self.run_compute(h, opt=opts(group_by="project"))
+        self.assertEqual(len({t["head"] for t in out.values()}), 3)
+        self.assertTrue(all("rev" in t["head"] for t in out.values()))
+        out, *_ = self.run_compute(h, opt=opts(group_by="project", disambiguate=False))
+        self.assertEqual(len({t["head"] for t in out.values()}), 2)
 
     def test_regression_stale_and_idle_are_not_look_alikes(self):
         h, memo = FakeHerdr([agent("p1", "w1", "idle", title="Docs refresh"), agent("p2", "w1", "idle", seq=2, title="Login bug")],
