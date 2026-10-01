@@ -69,7 +69,7 @@ CYCLES = {"view": ["triage", "needs me", "here+"], "group_by": ["none", "project
           "show_task": ["attention", "all", "never"], "space_sort": ["manual", "alpha", "recent", "activity"],
           "show_tab": ["named", "always", "never"], "layout": ["auto", "light", "dark"],
           "age_source": ["observed", "claude-transcripts"]}
-GLYPH = {"blocked": "×", "done": "✓", "working": "◐", "idle": "○", "unknown": "·", "stale": "⏾"}
+GLYPH = {"blocked": "×", "done": "✓", "working": "◐", "idle": "○", "unknown": "·", "stale": "◗"}
 PRIO = {"blocked": 4, "done": 3, "working": 2, "idle": 1, "unknown": 0}
 PINS = os.path.join(STATE_DIR, "pins.json")
 TOKENS = ["pin", "head", "age", "age_stale", "kind", "tag", "wait", "done", "task", "rule", "rank", "kgrp", "grp"]

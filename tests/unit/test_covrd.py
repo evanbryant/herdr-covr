@@ -103,7 +103,7 @@ class Layout(unittest.TestCase):
             self.assertTrue(row.endswith(" 12m"))
 
     def test_regression_space_name_is_shortened_before_the_tab(self):
-        row = covrd.pinned_row("⏾", "data-pipeline-service · billing", "39m", 32)
+        row = covrd.pinned_row("◗", "data-pipeline-service · billing", "39m", 32)
         self.assertIn("· billing", row)
         self.assertIn("…", row.split(" · ")[0])
         self.assertTrue(row.endswith(" 39m"))
@@ -217,7 +217,7 @@ class Ordering(Base):
         self.run_compute(h, memo=memo)
         memo["since"]["p1"]["since"] = time.time() - 7200  # idle for two hours
         out, *_ = self.run_compute(h, opt=opts(stale_after="1h"), memo=memo)
-        self.assertTrue(out["p1"]["head"].startswith("⏾ api"))
+        self.assertTrue(out["p1"]["head"].startswith("◗ api"))
 
     def test_pinned_agent_leads_and_is_marked(self):
         with open(covrd.PINS, "w", encoding="utf-8") as f:
@@ -260,7 +260,7 @@ class Viewed(Base):
         self.assertTrue(out["p1"]["head"].endswith(" <1m"))       # idle counts from the view, not from the finish
         self.clock.now += 1900                                    # ... and so does asleep (30m)
         out, *_ = self.run_compute(h, memo=memo)
-        self.assertTrue(out["p1"]["head"].startswith("⏾ api"))
+        self.assertTrue(out["p1"]["head"].startswith("◗ api"))
 
     def test_selected_finished_agent_is_marked_viewed_after_seen_after(self):
         h, memo = self.herdr(focused=True), {}
@@ -388,7 +388,7 @@ class Identity(Base):
         self.run_compute(h, memo=memo)
         memo["since"]["p1"]["since"] = time.time() - 7200
         out, *_ = self.run_compute(h, opt=opts(stale_after="1h"), memo=memo)
-        self.assertEqual(self.text(out["p1"]["head"]), "⏾ web")
+        self.assertEqual(self.text(out["p1"]["head"]), "◗ web")
         self.assertEqual(self.text(out["p2"]["head"]), "○ web")
 
     def test_project_grouping_names_the_project_once(self):

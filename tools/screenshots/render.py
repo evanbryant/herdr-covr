@@ -87,7 +87,7 @@ def style(st, t):
 
 def cells(tok):
     """Escape text for HTML, pinning every non-ASCII character to its terminal cell width. A browser draws
-    symbols its font lacks (⏾, braille blanks, …) from a fallback font at another width; a terminal never does."""
+    symbols its font lacks (◗, braille blanks, …) from a fallback font at another width; a terminal never does."""
     out = []
     for ch in tok:
         if ord(ch) < 128:

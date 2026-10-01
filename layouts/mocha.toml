@@ -12,7 +12,7 @@ rows = [
       { starts_with = "✓", fg = "#94e2d5" },
       { starts_with = "◐", fg = "#f9e2af" },
       { starts_with = "○", fg = "#a6e3a1" },
-      { starts_with = "⏾", fg = "#7f849c", dim = true },
+      { starts_with = "◗", fg = "#7f849c", dim = true },
       { starts_with = "·", fg = "#7f849c" } ] },
    ],
   [{ token = "$wait", fg = "#f38ba8", bold = true }],

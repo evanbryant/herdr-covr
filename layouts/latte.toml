@@ -15,7 +15,7 @@ rows = [
       { starts_with = "✓", fg = "#179299" },
       { starts_with = "◐", fg = "#c27c0e" },
       { starts_with = "○", fg = "#40a02b" },
-      { starts_with = "⏾", fg = "#9ca0b0", dim = true },
+      { starts_with = "◗", fg = "#9ca0b0", dim = true },
       { starts_with = "·", fg = "#9ca0b0" } ] },
    ],
   [{ token = "$wait", fg = "#d20f39", bold = true }],

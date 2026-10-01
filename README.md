@@ -23,7 +23,7 @@ Both screenshots show the same session, captured headless from the test sandbox 
 | `✓` | finished, not viewed yet | the task it finished |
 | `◐` | working | — |
 | `○` | idle (viewed) | — |
-| `⏾` | asleep: idle for longer than `stale_after` (30 min), dimmed | — |
+| `◗` | asleep: idle for longer than `stale_after` (30 min), dimmed | — |
 
 - **Order:** blocked, then finished, then working, then idle. Within a state, the most recent change comes first.
 - **Stable positions:** rows move only when an agent's state changes, never because an age ticked over.
