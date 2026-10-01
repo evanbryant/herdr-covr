@@ -170,4 +170,5 @@ The same code runs on Linux, macOS and Windows. Only a few mechanisms differ:
 - **Resizing:** after you drag the sidebar wider or narrower, alignment catches up within one tick.
 - **Sorting moves spaces:** any `space_sort` other than `manual` really moves spaces, which renumbers them.
 - **The split** between Spaces and Agents is herdr's; drag it once.
+- **Sort labels aren't clickable.** herdr makes the Agents sort label clickable only for its own two sorts. With a plugin view active the label does nothing, and plugins get no sidebar click events. Switch with the actions (bound to keys) or the settings popup.
 - **Windows:** herdr's plugin support there is a preview. The settings popup is tested by driving it directly, not inside herdr's popup pane (the test herdr runs without a client window).
