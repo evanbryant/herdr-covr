@@ -228,6 +228,101 @@ class Ordering(Base):
         self.assertNotIn("pin", out["p2"])
 
 
+class Viewed(Base):
+    """A finished agent (✓) becoming viewed (○): the timer restarts, and the selected one is viewed automatically."""
+
+    def setUp(self):
+        super().setUp()
+        self.clock = FakeClock()
+        self._time, covrd.time = covrd.time, self.clock
+
+    def tearDown(self):
+        covrd.time = self._time
+        super().tearDown()
+
+    def herdr(self, focused):
+        a = agent("p1", "w1", "working", seq=4)
+        a["focused"] = focused
+        return FakeHerdr([a], [space("w1", "api", 1)])
+
+    def finish(self, h, memo, opt=None):
+        self.run_compute(h, opt=opt, memo=memo)                  # seen while working
+        h.agents[0].update(agent_status="done", state_change_seq=5)
+        return self.run_compute(h, opt=opt, memo=memo)[0]
+
+    def test_timer_restarts_when_a_finished_agent_is_viewed(self):
+        h, memo = self.herdr(focused=False), {}
+        self.assertTrue(self.finish(h, memo)["p1"]["head"].startswith("✓ api"))
+        self.clock.now += 600                                     # ten minutes later you look at it:
+        h.agents[0]["agent_status"] = "idle"                      # herdr reports idle, same state_change_seq
+        out, *_ = self.run_compute(h, memo=memo)
+        self.assertTrue(out["p1"]["head"].startswith("○ api"))
+        self.assertTrue(out["p1"]["head"].endswith(" <1m"))       # idle counts from the view, not from the finish
+        self.clock.now += 1900                                    # ... and so does asleep (30m)
+        out, *_ = self.run_compute(h, memo=memo)
+        self.assertTrue(out["p1"]["head"].startswith("⏾ api"))
+
+    def test_selected_finished_agent_is_marked_viewed_after_seen_after(self):
+        h, memo = self.herdr(focused=True), {}
+        out = self.finish(h, memo)
+        self.assertTrue(out["p1"]["head"].startswith("✓ api"))
+        self.assertNotIn("agent.focus", [m for m, _ in h.calls])  # not before 5 s
+        self.assertAlmostEqual(memo["wake_at"], self.clock.now + 5)
+        self.clock.now += 5
+        out, *_ = self.run_compute(h, memo=memo)
+        self.assertIn(("agent.focus", {"target": "p1"}), h.calls)
+        self.assertTrue(out["p1"]["head"].startswith("○ api"))    # shown as viewed at once
+        self.assertTrue(out["p1"]["head"].endswith(" <1m"))
+        self.assertIsNone(memo["wake_at"])
+
+    def test_unselected_finished_agents_are_never_marked(self):
+        h, memo = self.herdr(focused=False), {}
+        self.finish(h, memo)
+        self.clock.now += 60
+        out, *_ = self.run_compute(h, memo=memo)
+        self.assertNotIn("agent.focus", [m for m, _ in h.calls])
+        self.assertTrue(out["p1"]["head"].startswith("✓ api"))
+
+    def test_seen_after_off_and_no_busy_wake(self):
+        h, memo = self.herdr(focused=True), {}
+        self.finish(h, memo, opt=opts(seen_after="off"))
+        self.clock.now += 60
+        self.run_compute(h, opt=opts(seen_after="off"), memo=memo)
+        self.assertNotIn("agent.focus", [m for m, _ in h.calls])
+        self.assertIsNone(memo["wake_at"])
+        # switching it off while one is pending must clear the wake-up, or the daemon would spin
+        memo2 = {}
+        self.finish(self.herdr(focused=True), memo2)
+        h2 = self.herdr(focused=True); h2.agents[0].update(agent_status="done", state_change_seq=5)
+        self.run_compute(h2, opt=opts(seen_after="off"), memo=memo2)
+        self.assertIsNone(memo2["wake_at"])
+
+    def test_failed_focus_is_retried_later_not_immediately(self):
+        h, memo = self.herdr(focused=True), {}
+        self.finish(h, memo)
+        self.clock.now += 5
+        real = h.__call__
+
+        def failing(method, params=None):
+            if method == "agent.focus":
+                raise RuntimeError("boom")
+            return FakeHerdr.__call__(h, method, params)
+        covrd.call = failing
+        memo.setdefault("dirty_at", 1e18)
+        saved_log, covrd.log = covrd.log, lambda *a: None
+        try:
+            covrd.compute(opts(), memo)
+        finally:
+            covrd.log = saved_log
+        self.assertGreater(memo["wake_at"], self.clock.now)       # pushed into the future
+
+    def test_seen_after_values(self):
+        for v in ("off", "5s", "90", "1m", "1h"):
+            self.assertIsNone(covrd.validate("seen_after", v)[1], v)
+        for v in ("soon", "0s", "2h", ""):
+            self.assertIsNotNone(covrd.validate("seen_after", v)[1], v)
+
+
 class Identity(Base):
     def test_regression_tab_names_show_on_every_row(self):
         h = FakeHerdr([agent("p1", "w1", "idle", tab="w1:t1"), agent("p2", "w1", "working", seq=2, tab="w1:t2")],

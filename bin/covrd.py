@@ -62,7 +62,7 @@ MIN_GAP = 0.5         # seconds between recomputes when hooks fire in bursts (pa
 FIGHT_MOVES, FIGHT_WINDOW, FIGHT_PAUSE = 3, 60, 300  # re-applying one order 3x in 60 s pauses space sorting 5 min
 ZW = "​"
 
-DEFAULTS = {"layout": "auto", "age_source": "observed", "label": "space", "show_kind": "never", "group_by": "none", "show_task": "attention",
+DEFAULTS = {"layout": "auto", "age_source": "observed", "seen_after": "5s", "label": "space", "show_kind": "never", "group_by": "none", "show_task": "attention",
             "disambiguate": True, "stale_after": "30m", "view": "triage", "space_sort": "manual", "show_tab": "named", "tick_seconds": 5}
 CYCLES = {"view": ["triage", "needs me", "here+"], "group_by": ["none", "project", "kind"],
           "show_kind": ["never", "auto", "always"], "label": ["space", "task"],
@@ -249,6 +249,11 @@ def validate(key, value):
         if v in ("0", "false", "no", "off"):
             return False, None
         return None, f"{key} must be true or false"
+    if key == "seen_after":
+        v = str(value).strip().lower()
+        if v == "off" or (DURATION.fullmatch(v) and 1 <= seconds(v) <= 3600):
+            return v, None
+        return None, "seen_after must be off or a duration between 1s and 1h, like 5s or 1m"
     if key == "stale_after":
         m = DURATION.fullmatch(str(value).strip())
         if not m or not 60 <= seconds(value) <= 30 * 86400:
@@ -516,6 +521,26 @@ def transcript_mtime(cwd, title, cache):
     return best
 
 
+def mark_seen(pane_id, opt, memo, now):
+    """A finished agent stays "done" until herdr's server sees an explicit focus on it. When it is already
+    the selected pane (e.g. it finished while the terminal window was in the background), nothing ever
+    focuses it again, so the ✓ would stay. After `seen_after` we focus it where it is, which marks it viewed
+    and moves nothing. Returns True once it has been marked."""
+    if str(opt["seen_after"]).lower() == "off":
+        return False
+    due = memo.setdefault("seen_due", {}).setdefault(pane_id, now + seconds(opt["seen_after"]))
+    if now < due:
+        return False
+    try:
+        call("agent.focus", {"target": pane_id})
+    except Exception as e:
+        log("mark seen failed", pane_id, repr(e))
+        memo["seen_due"][pane_id] = now + max(5, seconds(opt["seen_after"]))  # try again later, never spin
+        return False
+    memo["seen_due"].pop(pane_id, None)
+    return True
+
+
 def wait_reason(pane_id):
     try:
         txt = call("pane.read", {"pane_id": pane_id, "source": "visible", "lines": 40}).get("read", {}).get("text", "")
@@ -556,6 +581,8 @@ def compute(opt, memo):
         pid = a["pane_id"]
         st = a["agent_status"] if a["agent_status"] in PRIO else "unknown"
         seq = a.get("state_change_seq", 0)
+        if st == "done" and a.get("focused") and mark_seen(pid, opt, memo, now):
+            st = "idle"  # the agent you have selected has been finished long enough: it counts as viewed
         rec = seen.get(pid)
         if not rec or rec["seq"] != seq:
             first = rec is None
@@ -564,7 +591,12 @@ def compute(opt, memo):
                 start = None
                 if opt["age_source"] == "claude-transcripts":  # ... unless the user lets us look it up (opt-in)
                     start = transcript_mtime(a.get("cwd"), a.get("terminal_title_stripped"), tcache) or None
-            rec = seen[pid] = {"seq": seq, "since": start}
+            rec = seen[pid] = {"seq": seq, "since": start, "st": st}
+        elif rec.get("st") not in (None, st):
+            # the visible state changed without herdr counting a state change: a finished agent was viewed
+            # (done -> idle). The timer restarts, so "idle" and "asleep" count from when you viewed it.
+            rec["since"] = now
+        rec["st"] = st
         age = None if rec["since"] is None else max(0, int(now - rec["since"]))
         stale = st == "idle" and age is not None and age >= stale_after
         ws = spaces.get(a["workspace_id"], {})
@@ -575,6 +607,11 @@ def compute(opt, memo):
     for pid in list(seen):
         if pid not in {r["pid"] for r in rows}:
             seen.pop(pid)
+    pending = memo.setdefault("seen_due", {})
+    for pid in list(pending):  # only agents that are still finished and still selected stay due
+        if str(opt["seen_after"]).lower() == "off" or not any(a["pane_id"] == pid and a.get("agent_status") == "done" and a.get("focused") for a in agents):
+            pending.pop(pid)
+    memo["wake_at"] = min(pending.values()) if pending else None
     live_keys = {tkey(a.get("cwd"), a.get("terminal_title_stripped")) for a in agents}
     for k in list(tcache):
         if k not in live_keys:
@@ -1036,6 +1073,8 @@ def run():
                         return
                 if woke["flag"] and time.time() - last_tick >= MIN_GAP:
                     break  # a hook woke us; bursts (focus changes) coalesce into one recompute
+                if memo.get("wake_at") and time.time() >= memo["wake_at"]:
+                    break  # a selected, finished agent is due to be marked viewed
                 time.sleep(0.1)
             woke["flag"] = False
     finally:

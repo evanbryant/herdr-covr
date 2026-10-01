@@ -20,6 +20,7 @@ ITEMS = [
     ("show_task", "Second-line text", ["attention", "all", "never"]),
     ("disambiguate", "Task tags on look-alike rows", [True, False]),
     ("stale_after", "Idle → asleep (⏾) after", ["15m", "30m", "1h", "2h", "4h"]),
+    ("seen_after", "Selected ✓ → viewed after", ["off", "5s", "15s", "1m"]),
     ("age_source", "Ages of already-running agents", ["observed", "claude-transcripts"]),
 ]
 HELP = {
@@ -32,6 +33,7 @@ HELP = {
     "show_task": "attention = blocked reason + what finished",
     "disambiguate": "adds 1–2 words of the task when two rows would look identical",
     "stale_after": "idle longer than this dims to ⏾ and sinks",
+    "seen_after": "a finished agent you already have selected turns from ✓ to ○ after this long",
     "age_source": "observed = no age until a state changes · claude-transcripts = look it up in ~/.claude*",
 }
 FOOTER = "↑↓ select   ←→/enter change   s start/stop daemon   q close"

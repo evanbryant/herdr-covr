@@ -43,6 +43,8 @@ This is how covr (plugin id `covr.sidebar`, version 0.3) draws herdr's sidebar a
 The agents list uses one herdr Agent view.
 - **Sort:** pinned first, then attention (blocked > finished > working > idle), then the most recent state change.
 - **Stable ranking:** an agent's rank is set by the moment it entered its current state, so rows move only when a state changes, never as ages tick.
+- **Viewed restarts the timer:** herdr reports a finished agent as `done` until it is viewed, then as `idle`, without counting that as a state change. covr restarts the agent's timer at that moment, however it was viewed, so the idle age and the `stale_after` countdown run from the view, not from the finish.
+- **Selected and finished:** herdr's server marks an agent viewed only on an explicit focus. An agent that finishes while it is already the selected pane (for example with the terminal in the background) can therefore stay `done`. After `seen_after` (default 5 s), covr focuses it where it is, which marks it viewed and moves nothing. The daemon wakes at the due time, not at its next tick.
 - **Age source:** the age is time in the current state, as the daemon observes it; it remembers start times across restarts. An agent already in its state when the daemon first sees it has no age until its state changes. With `age_source = claude-transcripts` (opt-in), that start time is taken from the newest Claude Code transcript that mentions the session title.
 
 ### Grouping
@@ -111,6 +113,7 @@ Options are stored in `$(herdr plugin config-dir covr.sidebar)/config.toml`. The
 | `show_task` | `attention` (blocked reason and finished task) · `all` · `never` |
 | `disambiguate` | `true` · `false` |
 | `stale_after` | `30m`; any duration from `1m` to `30d` |
+| `seen_after` | `5s`; `off`, or any duration from `1s` to `1h` |
 | `tick_seconds` | `5`; from 2 to 60 |
 | `layout` | `auto` · `light` · `dark` (used by `install-layout`) |
 | `age_source` | `observed` · `claude-transcripts` (opt-in: reads transcript files under `~/.claude*/projects`) |

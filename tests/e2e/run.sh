@@ -7,7 +7,7 @@
 #      E2E_ROOT    sandbox root; keep it short, unix sockets must stay < 108 chars (default: /tmp/covr-e2e)
 #      PYTHON      interpreter the sandboxed herdr runs the plugin with, e.g. a python3.8 (default: python3 on PATH)
 # tests: single tokens restart gone sessions disable popup notoml layout
-#        events width seq cap validate hygiene fight reload gitsafe   (default: all)
+#        events width seq cap validate hygiene fight reload gitsafe viewed   (default: all)
 # Linux and macOS (daemons are attributed to the sandbox by their environment: /proc on Linux, ps -E on macOS).
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -175,8 +175,9 @@ t_disable() { # G4: disable -> daemon clears its tokens and exits; enable + any 
 t_popup() {   # G5: the settings popup is plugin-owned and drives this session's daemon
   fresh
   until_t 15 all_heads >/dev/null
-  act settings; sleep 1
-  if ! $TM capture-pane -t t:0 -p | grep -q 'covr — settings'; then no popup "popup did not open"; return; fi
+  act settings
+  popup_open() { $TM capture-pane -t t:0 -p | grep -q 'covr — settings'; }
+  until_t 10 popup_open || { no popup "popup did not open"; return; }
   $TM send-keys -t t:0 s; until_t 10 zero || { no popup "s did not stop the daemon"; return; }
   $TM send-keys -t t:0 s; sleep 2
   local n; n=$(ndaemons "$SOCK1")
@@ -375,7 +376,29 @@ print([(x.get("tokens") or {}).get("dirty") for x in json.load(sys.stdin)["resul
   else ok gitsafe; fi
 }
 
-ALL="single tokens restart gone sessions disable popup notoml layout events width seq cap validate hygiene fight reload gitsafe"
+t_viewed() {  # a finished agent you already have selected is marked viewed after seen_after, and its timer restarts
+  fresh
+  until_t 15 all_heads >/dev/null
+  local p w; p=$(cut -d' ' -f1 < "$B/home/panes"); w=${p%%:*}
+  status() { sb 'hsock agent.list' | python3 -c 'import json, sys
+print([a["agent_status"] for a in json.load(sys.stdin)["result"]["agents"] if a["pane_id"] == sys.argv[1]][0])' "$p"; }
+  sb "herdr workspace focus $w" >/dev/null; sleep 1
+  $TM send-keys -t t:0 -l "$(printf '\033[O')"; sleep 0.5       # the terminal window goes to the background
+  sb "herdr pane report-agent $p --source e2e --agent claude --state working" >/dev/null; sleep 1
+  sb "herdr pane report-agent $p --source e2e --agent claude --state idle" >/dev/null; sleep 2
+  local before; before=$(status)                                  # herdr: finished, not seen, though it is selected
+  local why=""
+  [ "$before" = done ] || why+="expected done while the terminal is in the background, got $before; "
+  [[ "$(head_of "$p")" == "✓"* ]] || why+="row is not ✓ before seen_after ($(head_of "$p")); "
+  until_t 12 eval '[ "$(status)" = idle ]' || why+="still $(status) 12 s later; "
+  sleep 1
+  local h; h=$(head_of "$p")
+  [[ "$h" == "○"* ]] || why+="row is not ○ after being viewed ($h); "
+  [[ "$h" == *"<1m" ]] || why+="timer did not restart ($h); "
+  [ -z "$why" ] && ok viewed || no viewed "$why"
+}
+
+ALL="single tokens restart gone sessions disable popup notoml layout events width seq cap validate hygiene fight reload gitsafe viewed"
 [ -n "${E2E_LIB:-}" ] && return 0   # sourced for its helpers (tools/screenshots/scene.sh)
 for t in ${*:-$ALL}; do "t_$t"; done
 [ -n "${KEEP:-}" ] || down

@@ -20,14 +20,15 @@ Both screenshots show the same session, captured headless from the test sandbox 
 | glyph | state | second line |
 |:-:|---|---|
 | `×` | blocked, waiting for you | what it is asking, taken from the screen |
-| `✓` | finished, not looked at yet | the task it finished |
+| `✓` | finished, not viewed yet | the task it finished |
 | `◐` | working | — |
-| `○` | idle | — |
+| `○` | idle (viewed) | — |
 | `⏾` | asleep: idle for longer than `stale_after` (30 min), dimmed | — |
 
 - **Order:** blocked, then finished, then working, then idle. Within a state, the most recent change comes first.
 - **Stable positions:** rows move only when an agent's state changes, never because an age ticked over.
-- **Age:** time in the current state, on the right.
+- **Age:** time in the current state, on the right. For an idle agent that means time since you viewed it, so the 30 minutes to asleep also start then.
+- **Selected agent:** a finished agent you already have selected turns from `✓` to `○` by itself after 5 s (`seen_after`; set it to `off` to keep herdr's behaviour). Without this, an agent that finishes while your terminal is in the background can stay `✓` until you click away and back.
 - **Label:** the space name, plus the tab name if you renamed the tab (`infra · plan`). When two rows would look the same, both get a word or two of their task.
 - **Spaces:** keep herdr's own rows, plus `±` for uncommitted changes, `!N` on a repo whose worktrees hold N blocked agents, and `★` for a pinned space.
 
