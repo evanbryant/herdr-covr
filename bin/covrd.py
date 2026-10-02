@@ -552,14 +552,34 @@ def wait_reason(pane_id):
     # blank lines (and box rules, which strip to nothing) stay in as paragraph breaks
     lines = [re.sub(r"[│╭╮╰╯─┃]+", " ", l).strip() for l in txt.splitlines()]
     for i in range(len(lines) - 1, -1, -1):
-        if re.search(r"\?\s*$", lines[i]) and not re.match(r"^(❯|>|\d+\.)", lines[i]):
+        # a question ends in ? (or a full-width ？), maybe followed by a [y/N] choice
+        if re.search(r"[?？]\s*(\[[^\]]{1,9}\])?\s*$", lines[i]) and not re.match(r"^(❯|>|\d+\.)", lines[i]):
             # prefer the command/tool line just above an approval question
             if re.search(r"(proceed|allow|approve|want to)", lines[i], re.I):
                 above = [k for k in range(i) if lines[k]]
                 if above:
                     return reason_text(lines[above[-1]])
-            return reason_text(paragraph(lines, i))
+            header = question_header(lines, i)
+            return reason_text((header + ": " if header else "") + unmark(paragraph(lines, i)))
     return "waiting for you"
+
+
+TAB = r"[☐☒✔]\s+\S.*?"
+TABS = re.compile(rf"^(←\s+)?{TAB}(\s{{2,}}{TAB})*(\s+→)?$")
+
+
+def question_header(lines, i, look=12):
+    """Claude's multiple-choice form labels each question with a short header on a tab line above it
+    (`←  ☐ Deploy  ☐ Rollback  ✔ Submit  →`, or ` ☐ Deploy` for one question). The first unanswered ☐ is
+    the question on screen. Only a real form counts: a line of nothing but tabs, with the form's footer
+    (`Enter to select · … · Esc to cancel`) below the question, so a todo list (`☐ Run the tests`) never becomes a header."""
+    if not any(re.search(r"^Enter to select|Esc to cancel", l) for l in lines[i + 1:]):  # either half, if it wraps
+        return ""
+    for line in reversed(lines[max(0, i - look):i]):
+        if TABS.match(line):
+            tabs = re.findall(r"☐\s+(.+?)(?=\s{2,}|\s*[☐☒✔→]|$)", line)
+            return tabs[0].strip() if tabs else ""
+    return ""
 
 
 def paragraph(lines, i, most=4):
@@ -572,9 +592,14 @@ def paragraph(lines, i, most=4):
     return " ".join(lines[j:i + 1])
 
 
+def unmark(text):
+    """Drop the leading message/bullet markers (● ⏺ ☐ ✻ * •)."""
+    return re.sub(r"^[●⏺☐✻*•\s]+", "", text)
+
+
 def reason_text(text, limit=60):
     """One line for the row: markers dropped, whitespace collapsed, cut at a word with …"""
-    text = re.sub(r"\s+", " ", re.sub(r"^[●⏺☐✻*•\s]+", "", text)).strip()
+    text = re.sub(r"\s+", " ", unmark(text)).strip()
     if len(text) <= limit:
         return text
     cut = text[:limit - 1]

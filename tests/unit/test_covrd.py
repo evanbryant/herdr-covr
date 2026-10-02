@@ -176,6 +176,45 @@ class WaitReason(unittest.TestCase):
                   "│ ❯ 1. Yes │\n│ 2. No │\n╰──────────╯\n")
         self.assertEqual(self.reason(screen), "rm -rf build")
 
+    def test_question_form_shows_its_header(self):
+        screen = ("● Summary of the cleanup.\n"
+                  "─────────────────────────\n"
+                  "←  ☐ Teardown  ☐ Rollback  ✔ Submit  →\n\n"
+                  "│ The web staging stack still serves the docs preview, not just the old API path. How far\n"
+                  "│ should the teardown go?\n\n"
+                  "❯ 1. Delete the branches only (Recommended)\n"
+                  "     Removes the last code that reads the token.\n"
+                  "  2. Full teardown\n"
+                  "  3. Type something.\n"
+                  "─────────────────────────\n"
+                  "  4. Chat about this\n\n"
+                  "Enter to select · Tab/Arrow keys to navigate · Esc to cancel\n")
+        self.assertEqual(self.reason(screen), "Teardown: The web staging stack still serves the docs…")
+
+    FOOTER = "Enter to select · ↑/↓ to navigate · Esc to cancel\n"
+
+    def test_single_question_header(self):
+        screen = "─────\n ☐ Deploy\n\nShip it?\n\n❯ 1. Yes\n  2. No\n\n" + self.FOOTER
+        self.assertEqual(self.reason(screen), "Deploy: Ship it?")
+
+    def test_header_skips_answered_questions(self):
+        screen = "←  ☒ Deploy  ☐ Rollback  ✔ Submit  →\n\nKeep the old build?\n\n❯ 1. Yes\n\n" + self.FOOTER
+        self.assertEqual(self.reason(screen), "Rollback: Keep the old build?")
+
+    def test_regression_todo_list_is_not_a_header(self):
+        screen = ("● Update Todos\n  ⎿  ☒ Read the parser\n     ☐ Fix the header rule\n     ☐ Run the tests\n\n"
+                  "● I found two ways to fix it. Should I keep the old behaviour for\n  single questions?\n\n❯ \n")
+        self.assertEqual(self.reason(screen), "I found two ways to fix it. Should I keep the old…")
+
+    def test_no_header_for_plain_questions(self):
+        self.assertEqual(self.reason("● All done. ☐ is a box. Ship it?\n\n❯ \n"), "All done. ☐ is a box. Ship it?")
+
+    def test_full_width_question_mark(self):
+        self.assertEqual(self.reason("● どの形式で出力しますか？\n\n❯ \n"), "どの形式で出力しますか？")
+
+    def test_approval_with_a_choice_suffix(self):
+        self.assertEqual(self.reason("  npm test -- --coverage\n\n  Do you want to proceed? [y/N]\n"), "npm test -- --coverage")
+
     def test_nothing_found(self):
         self.assertEqual(self.reason("working...\n"), "waiting for you")
 
