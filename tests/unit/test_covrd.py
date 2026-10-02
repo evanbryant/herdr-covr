@@ -152,6 +152,34 @@ class Layout(unittest.TestCase):
         self.assertTrue(c.endswith("…"))
 
 
+class WaitReason(unittest.TestCase):
+    def reason(self, screen):
+        old = covrd.call
+        covrd.call = lambda m, p=None: {"read": {"text": screen}}
+        try:
+            return covrd.wait_reason("p1")
+        finally:
+            covrd.call = old
+
+    def test_regression_wrapped_question_shows_its_start(self):
+        screen = ("● Posted the digest.\n\n"
+                  "● The Steam Visibility digest will post again on Monday around 15:00 UTC. Should I stop it now from\n"
+                  "  our side?\n\n"
+                  "❯ \n")
+        self.assertEqual(self.reason(screen), "The Steam Visibility digest will post again on Monday…")
+
+    def test_short_question_unchanged(self):
+        self.assertEqual(self.reason("● Ship it?\n\n❯ \n"), "Ship it?")
+
+    def test_approval_prefers_the_command_above(self):
+        screen = ("╭──────────╮\n│ Bash command │\n│ rm -rf build │\n│\n│ Do you want to proceed? │\n"
+                  "│ ❯ 1. Yes │\n│ 2. No │\n╰──────────╯\n")
+        self.assertEqual(self.reason(screen), "rm -rf build")
+
+    def test_nothing_found(self):
+        self.assertEqual(self.reason("working...\n"), "waiting for you")
+
+
 class Ordering(Base):
     def herdr(self):
         return FakeHerdr(

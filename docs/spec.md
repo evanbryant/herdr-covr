@@ -16,6 +16,7 @@ This is how covr (plugin id `covr.sidebar`, version 0.3) draws herdr's sidebar a
 ◗ docs                     2h1m   idle past stale_after (asleep): the whole row dims
 ```
 
+- **Blocked reason:** read from the pane: the command above an approval prompt, otherwise the last question on screen. A question that wraps is joined back up and shown from its start, cut at a word with `…`.
 - **One token:** the first line is a single token, `$head`, holding the glyph, the label, any extra parts and the age.
 - **Right-aligned age:** herdr has no alignment, so the daemon pads the line with U+2800 (a blank that herdr does not trim) to the sidebar's current width.
 - **One colour per line:** herdr styles a whole token at once, so the whole line takes its state's colour.

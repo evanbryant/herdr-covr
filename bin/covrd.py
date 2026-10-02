@@ -549,16 +549,36 @@ def wait_reason(pane_id):
             txt = subprocess.run([HERDR, "pane", "read", pane_id], capture_output=True, encoding="utf-8", errors="replace", timeout=5, **NOWIN).stdout
         except Exception:
             txt = ""
+    # blank lines (and box rules, which strip to nothing) stay in as paragraph breaks
     lines = [re.sub(r"[│╭╮╰╯─┃]+", " ", l).strip() for l in txt.splitlines()]
-    lines = [l for l in lines if l]
     for i in range(len(lines) - 1, -1, -1):
         if re.search(r"\?\s*$", lines[i]) and not re.match(r"^(❯|>|\d+\.)", lines[i]):
-            q = lines[i]
             # prefer the command/tool line just above an approval question
-            if re.search(r"(proceed|allow|approve|want to)", q, re.I) and i > 0:
-                q = lines[i - 1]
-            return re.sub(r"\s+", " ", q)[:60]
+            if re.search(r"(proceed|allow|approve|want to)", lines[i], re.I):
+                above = [k for k in range(i) if lines[k]]
+                if above:
+                    return reason_text(lines[above[-1]])
+            return reason_text(paragraph(lines, i))
     return "waiting for you"
+
+
+def paragraph(lines, i, most=4):
+    """The text ends at lines[i], but a long question wraps: walk up to where its paragraph starts (a blank
+    line, a ● message marker or a numbered option), so the row shows the start, not the wrapped tail."""
+    j = i
+    while j > 0 and i - j < most and lines[j - 1] and not re.match(r"^(●|⏺|❯|>|\d+\.)", lines[j]) \
+            and not re.match(r"^(❯|>|\d+\.)", lines[j - 1]):
+        j -= 1
+    return " ".join(lines[j:i + 1])
+
+
+def reason_text(text, limit=60):
+    """One line for the row: markers dropped, whitespace collapsed, cut at a word with …"""
+    text = re.sub(r"\s+", " ", re.sub(r"^[●⏺☐✻*•\s]+", "", text)).strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit - 1]
+    return (cut.rsplit(" ", 1)[0] if " " in cut[limit // 2:] else cut).rstrip(" ,;:—-") + "…"
 
 
 # ---------------- compute ----------------

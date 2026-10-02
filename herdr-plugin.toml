@@ -1,6 +1,6 @@
 id = "covr.sidebar"
 name = "covr"
-version = "0.4.3"
+version = "0.4.4"
 min_herdr_version = "0.9.0"
 description = "Minimal attention-first Spaces/Agents sidebar: one line per entry, shape glyphs, kind optional"
 platforms = ["linux", "macos", "windows"]
