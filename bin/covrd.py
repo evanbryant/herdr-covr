@@ -63,11 +63,11 @@ FIGHT_MOVES, FIGHT_WINDOW, FIGHT_PAUSE = 3, 60, 300  # re-applying one order 3x 
 ZW = "​"
 
 DEFAULTS = {"layout": "auto", "age_source": "observed", "seen_after": "5s", "label": "space", "show_kind": "never", "group_by": "none", "show_task": "attention",
-            "disambiguate": True, "show_icon": True, "stale_after": "30m", "view": "triage", "space_sort": "manual", "show_tab": "named", "tick_seconds": 5}
+            "disambiguate": True, "kind_icon": "right", "stale_after": "30m", "view": "triage", "space_sort": "manual", "show_tab": "named", "tick_seconds": 5}
 CYCLES = {"view": ["triage", "needs me", "here+"], "group_by": ["none", "project", "kind"],
           "show_kind": ["never", "auto", "always"], "label": ["space", "task"],
           "show_task": ["attention", "all", "never"], "space_sort": ["manual", "alpha", "recent", "activity"],
-          "show_tab": ["named", "always", "never"], "layout": ["auto", "light", "dark"],
+          "show_tab": ["named", "always", "never"], "kind_icon": ["left", "inline", "right", "off"], "layout": ["auto", "light", "dark"],
           "age_source": ["observed", "claude-transcripts"]}
 # one single-width mark per agent kind, shown after the state glyph. Claude's ✻ and Gemini's ✦ are their own marks;
 # the rest are the nearest plain shape. None of them reuses a state glyph (× ✓ ◐ ○ ◗ ·).
@@ -79,7 +79,7 @@ ICON_OTHER = "▫"
 GLYPH = {"blocked": "×", "done": "✓", "working": "◐", "idle": "○", "unknown": "·", "stale": "◗"}
 PRIO = {"blocked": 4, "done": 3, "working": 2, "idle": 1, "unknown": 0}
 PINS = os.path.join(STATE_DIR, "pins.json")
-TOKENS = ["pin", "head", "age", "age_stale", "kind", "tag", "wait", "done", "task", "rule", "rank", "kgrp", "grp"]
+TOKENS = ["pin", "icon", "head", "icon_r", "age", "age_stale", "kind", "tag", "wait", "done", "task", "rule", "rank", "kgrp", "grp"]
 
 
 def log(*a):
@@ -289,6 +289,8 @@ def options():
     except Exception as e:  # a torn or hand-broken file: keep defaults for this tick
         log_once(("unreadable", repr(e)), "options file unreadable, using defaults:", repr(e))
         return o
+    if raw.get("show_icon") is False and "kind_icon" not in raw:
+        o["kind_icon"] = "off"  # 0.5.0 called it show_icon (true / false)
     for k, v in raw.items():
         if k not in DEFAULTS:
             continue  # an old or misspelled key: ignored
@@ -742,11 +744,18 @@ def compute(opt, memo):
             if opt["show_kind"] == "always" or (show_kind and mode != "kind") or (mode == "kind" and r["pid"] in firsts and len(kinds) > 1):
                 parts.append(r["kind"])
         body = " · ".join(parts) + (" ★" if r["pinned"] else "")
-        if opt["show_icon"]:
-            # [status] [kind] [label]: inside $head, so it takes the row's state colour. As its own token it could
-            # be brand-coloured, but herdr joins tokens with an unconfigurable " · " and that costs 4 cells
-            body = f"{ICON.get(r['kind'], ICON_OTHER)} {body}"
-        t["head"] = pinned_row(glyph, body, fmt_age(r["age"]), width)
+        icon, where = ICON.get(r["kind"], ICON_OTHER), opt["kind_icon"]
+        if where == "inline":
+            # [status] [kind] [label]: inside $head, so it takes the row's state colour
+            body = f"{icon} {body}"
+        elif where in ("left", "right"):
+            # its own token, so the layout colours it by brand; herdr joins tokens with an unconfigurable " · ",
+            # so it costs 4 cells. Brand colour while the agent is live, idle included (a restart restores every
+            # agent idle, and an all-grey sidebar reads as broken); unknown rows grey it (one ZW prefix), asleep
+            # rows dim it like the rest (two) — see the layouts' rules
+            quiet = 2 if r["stale"] else 1 if r["st"] == "unknown" else 0
+            t["icon" if where == "left" else "icon_r"] = ZW * quiet + icon
+        t["head"] = pinned_row(glyph, body, fmt_age(r["age"]), width - (4 if where in ("left", "right") else 0))
         if r["pinned"]:
             t["pin"] = "0"
         if mode == "kind" and r["pid"] in lasts and len(kinds) > 1:
@@ -920,13 +929,14 @@ def move_spaces(want, memo):
 
 
 def lost_tokens(memo):
-    """True when a still-live agent shows none of the tokens we pushed to it: its server restarted
-    (or handed off) and dropped every token and the view, so all of it must be pushed again.
-    (All of them, not some: herdr may drop a single value it sanitises to empty, and that must not
-    turn into a full resync every tick.)"""
+    """True when a still-live agent shows none of the tokens we pushed to it, or has lost its $head: its
+    server restarted (or handed off, or refused our reports) and dropped them, so all of it must be pushed
+    again. (Not any token: herdr may drop a single value it sanitises to empty, and that must not turn into
+    a full resync every tick. $head never is empty: it always starts with the state glyph. And not only
+    "none": a token herdr kept, like $icon_r, must not hide that the row itself is gone.)"""
     live = memo.get("live") or {}
     for pid, t in (memo.get("pushed") or {}).items():
-        if t and pid in live and not set(t) & live[pid]:
+        if t and pid in live and (not set(t) & live[pid] or ("head" in t and "head" not in live[pid])):
             return True
     return False
 
@@ -953,6 +963,10 @@ def apply(out, wout, view, memo):
             last[pid] = t
     for pid in list(last):
         if pid not in out:
+            # no longer an agent (it exited and the pane stayed a shell, or the pane closed): take our tokens
+            # back, or a later agent in the same pane would inherit the ones its rows don't set (a stale reason)
+            if last[pid]:
+                report("pane", pid, {}, list(last[pid]))
             last.pop(pid)
     wl = memo.setdefault("wpushed", {})
     for wid in set(wout) | set(wl):

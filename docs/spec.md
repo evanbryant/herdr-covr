@@ -1,6 +1,6 @@
 # covr: design and behaviour
 
-This is how covr (plugin id `covr.sidebar`, version 0.5) draws herdr's sidebar and how its daemon behaves. The README covers installation and a quick tour.
+This is how covr (plugin id `covr.sidebar`, version 0.5.1) draws herdr's sidebar and how its daemon behaves. The README covers installation and a quick tour.
 
 ## Agents
 
@@ -13,7 +13,7 @@ agents [9]               triage   header: every open agent, then the view
 × ✻ api                      2m   glyph · kind icon · label [· tab] [· tag] [· kind]      age
   ↳ Bash(npm run migrate:up)      blocked only: what it is asking (red)
 ✓ ◈ web                     <1m
-  ↳ Fix checkout redirect         finished and not yet seen: the task (teal)
+  ↳ Fix checkout redirect         finished and not yet seen: the task (cyan)
 ◗ ✻ docs                   2h1m   idle past stale_after (asleep): the whole row dims
 ```
 
@@ -24,7 +24,16 @@ agents [9]               triage   header: every open agent, then the view
 - **Truncation:** long labels are cut at a word boundary with `…`. The space name is shortened before the tab name, and the age is never cut. No token exceeds herdr's 80-character limit.
 - **Tabs:** tab names show only for tabs you renamed (`show_tab = named`); auto-numbered tabs are hidden.
 - **Look-alike rows:** when two agents in one space and tab would render the same, each gets one or two words of its task (`web · Docs refresh` / `web · Login bug`).
-- **Kind icon:** one mark per agent kind between the state glyph and the label (`show_icon`, on by default; costs 2 cells). Claude's `✻` and Gemini's `✦` are the brands' own marks; the others are plain shapes: codex `◈`, grok `⊘`, cursor `◆`, copilot `◉`, opencode `◫`, amp `▲`, droid `▤`, pi `π`, omp `∏`, qwen `✧`, kimi `◍`, cline `◘`, devin `◇`, hermes `☿`, letta `λ`, kilo `▣`, qodercli `◪`, agy `◢`, kiro `▽`, mastracode `►`, anything else `▫`. None reuses a state glyph. The icon is part of `$head`, so it takes the row's state colour: as a token of its own it could be brand-coloured, but herdr puts an unconfigurable ` · ` between tokens. Official logos would need an icon font on every machine, so they are left for a later opt-in mode.
+- **Kind icon:** one mark per agent kind; `kind_icon` places it. Terminals draw a character their font lacks from a fallback font, often wider or higher than a cell: Hack (Warp's default) lacks `✻ ✦ ✧ ☿` and the `✓` state glyph, which is why they can look offset there. DejaVu Sans Mono has every glyph covr uses. Claude's `✻` and Gemini's `✦` are the brands' own marks; the others are plain shapes: codex `◈`, grok `⊘`, cursor `◆`, copilot `◉`, opencode `◫`, amp `▲`, droid `▤`, pi `π`, omp `∏`, qwen `✧`, kimi `◍`, cline `◘`, devin `◇`, hermes `☿`, letta `λ`, kilo `▣`, qodercli `◪`, agy `◢`, kiro `▽`, mastracode `►`, anything else `▫`. None reuses a state glyph. herdr colours a whole token at once and puts an unconfigurable ` · ` between tokens, so the placement trades colour against room:
+
+  | `kind_icon` | row | colour | cost |
+  |---|---|---|---|
+  | `left` | `✻ · × api            2m` | brand (`$icon` token) | 4 cells |
+  | `inline` | `× ✻ api              2m` | the row's state colour (inside `$head`) | 2 cells |
+  | `right` (default) | `× api           2m · ✻` | brand (`$icon_r` token) | 4 cells |
+  | `off` | `× api                2m` | — | 0 |
+
+  Brand colours are the official ones where a brand has one: Claude `#D97757` (`#C15F3C`, Claude's darker clay, on light layouts), Gemini `#8E75B2`, Qwen `#6950EF`. Brands whose logos are black (OpenAI, Grok, Cursor, Copilot, OpenCode, Kimi, Cline, Pi) and kinds without an official colour use a neutral tone: white-ish on dark layouts, `#7c7f93` on light ones, which also reads when a dark terminal shows through herdr's light theme. The brand colour shows while an agent is live, idle included, so a herdr restart (which restores every agent idle) still shows colour. Asleep rows dim the icon with the rest of the row, and rows of unknown state grey it. `left` and `right` need the current layout (`install-layout`). The 0.5.0 option `show_icon = false` still means `off`. Official logos would need an icon font on every machine, so they are left for a later opt-in mode.
 - **Agent count:** the Agents header shows `agents [N]`, N being every open agent whatever the view filters. herdr right-aligns a view's label, so the daemon pads it with U+2800 to put the count beside the word; on a sidebar too narrow for that it falls back to `[N] · <view>`. herdr's Spaces header can't be labelled by a plugin.
 - **Agent kind:** hidden by default (`show_kind`). `auto` shows it while more than one kind runs: on every row, or once per group under `group_by = kind`. `always` puts it on every row under any grouping.
 - **Task titles** are herdr's `terminal_title_stripped`; Claude Code sets it to the session title.
@@ -35,7 +44,7 @@ agents [9]               triage   header: every open agent, then the view
 | state | glyph | light / dark colour |
 |---|:-:|---|
 | blocked | `×` | `#d20f39` / `#f38ba8`, bold, plus the reason line |
-| finished, not seen | `✓` | `#179299` / `#94e2d5`, plus the task line |
+| finished, not seen | `✓` | `#04a5e5` / `#89dceb`, plus the task line |
 | working | `◐` | `#c27c0e` / `#f9e2af` |
 | idle | `○` | `#40a02b` / `#a6e3a1` |
 | asleep (idle past `stale_after`) | `◗` | `#9ca0b0` / `#7f849c`, dimmed |
@@ -114,7 +123,7 @@ Options are stored in `$(herdr plugin config-dir covr.sidebar)/config.toml`. The
 | `label` | `space` · `task` |
 | `show_tab` | `named` · `always` · `never` |
 | `show_kind` | `never` · `auto` (only while more than one kind runs) · `always` |
-| `show_icon` | `true` · `false` (kind icon between the glyph and the label) |
+| `kind_icon` | `left` · `inline` · `right` · `off` (where the agent kind icon goes; brand-coloured at left and right) |
 | `show_task` | `attention` (blocked reason and finished task) · `all` · `never` |
 | `disambiguate` | `true` · `false` |
 | `stale_after` | `30m`; any duration from `1m` to `30d` |
@@ -152,7 +161,7 @@ Bind any of them in herdr's `config.toml` as `type = "plugin_action"`, `command 
 - **Clean undo:** uninstalling removes exactly what install added.
 - **Conflicts:** it refuses a config that would define the same tables twice.
 - **Rollback:** it restores the old file if `herdr server reload-config` fails.
-- **Older blocks:** a block written by an older covr version is recognised. Run `install-layout` again after an upgrade, so the block's colour rules match the current glyphs (0.4.3 changed asleep to `◗`).
+- **Older blocks:** a block written by an older covr version is recognised. Run `install-layout` again after an upgrade, so the block's colour rules match the current glyphs (0.4.3 changed asleep to `◗`; 0.5.0 added the kind-icon tokens; 0.5.1 made finished cyan).
 
 ## Platforms
 

@@ -25,7 +25,7 @@ Both screenshots show the same session, captured headless from the test sandbox 
 | `○` | idle (viewed) | — |
 | `◗` | asleep: idle for longer than `stale_after` (30 min), dimmed | — |
 
-- **Kind icon:** after the glyph, one mark per agent type: `✻` claude, `◈` codex, `✦` gemini, `⊘` grok, `◆` cursor, `◫` opencode, and so on for every agent herdr detects (`show_icon = false` hides them).
+- **Kind icon:** one mark per agent type: `✻` claude, `◈` codex, `✦` gemini, `⊘` grok, `◆` cursor, `◫` opencode, and so on for every agent herdr detects. `kind_icon` puts it at the `right` end of the row (the default) or at the `left`, in the brand's colour, dimmed once the agent falls asleep. `inline` puts it just after the glyph in the row's colour, and `off` hides it. The icons need a terminal font that has these symbols, such as DejaVu Sans Mono; with a font that lacks them, the terminal borrows them from another font and they can sit out of line.
 - **Count:** the header reads `agents [N]`, every agent you have open.
 - **Order:** blocked, then finished, then working, then idle. Within a state, the most recent change comes first.
 - **Stable positions:** rows move only when an agent's state changes, never because an age ticked over.
@@ -47,6 +47,7 @@ herdr plugin action invoke covr.sidebar.install-layout
 - **Colours** follow your `[theme] name`: latte colours for light themes, mocha for the rest. Set `layout` to `light` or `dark` to override.
 - **Conflicts:** if you already define `[ui.sidebar.spaces]` or `[ui.sidebar.agents]`, it writes nothing and says why.
 - **Undo:** `uninstall-layout` removes the block, byte for byte.
+- **Upgrades:** run `install-layout` again after updating covr, so the block's colours match the current glyphs and icons.
 
 <img src="docs/images/covr-dark.png" width="330" alt="covr on a dark (catppuccin-mocha) theme">
 

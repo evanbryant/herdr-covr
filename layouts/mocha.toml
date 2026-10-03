@@ -7,16 +7,28 @@ rows = [["state_icon", "workspace", { token = "$alert", fg = "#f38ba8", bold = t
 [ui.sidebar.agents]
 row_gap = 0
 rows = [
-  [{ token = "$head", fg = "#cdd6f4", rules = [
+  [{ token = "$icon", fg = "#cdd6f4", rules = [
+      { starts_with = "\u200b\u200b", fg = "#7f849c", dim = true },
+      { starts_with = "\u200b", fg = "#9399b2" },
+      { starts_with = "✻", fg = "#d97757" },
+      { starts_with = "✦", fg = "#8e75b2" },
+      { starts_with = "✧", fg = "#6950ef" } ] },
+   { token = "$head", fg = "#cdd6f4", rules = [
       { starts_with = "×", fg = "#f38ba8", bold = true },
-      { starts_with = "✓", fg = "#94e2d5" },
+      { starts_with = "✓", fg = "#89dceb" },
       { starts_with = "◐", fg = "#f9e2af" },
       { starts_with = "○", fg = "#a6e3a1" },
       { starts_with = "◗", fg = "#7f849c", dim = true },
       { starts_with = "·", fg = "#7f849c" } ] },
+   { token = "$icon_r", fg = "#cdd6f4", rules = [
+      { starts_with = "\u200b\u200b", fg = "#7f849c", dim = true },
+      { starts_with = "\u200b", fg = "#9399b2" },
+      { starts_with = "✻", fg = "#d97757" },
+      { starts_with = "✦", fg = "#8e75b2" },
+      { starts_with = "✧", fg = "#6950ef" } ] },
    ],
   [{ token = "$wait", fg = "#f38ba8", bold = true }],
-  [{ token = "$done", fg = "#94e2d5" }],
+  [{ token = "$done", fg = "#89dceb" }],
   [{ token = "$task", fg = "#7f849c" }],
   [{ token = "$rule", fg = "#45475a" }],
 ]

@@ -68,7 +68,7 @@ def space(wid, label, number, **kw):
 
 
 def opts(**kw):
-    o = dict(covrd.DEFAULTS, show_icon=False)  # row-text tests read cleaner without the kind icon; icon tests turn it on
+    o = dict(covrd.DEFAULTS, kind_icon="off")  # row-text tests read cleaner without the kind icon; icon tests turn it on
     o.update(kw)
     return o
 
@@ -432,15 +432,40 @@ class Identity(Base):
         self.assertEqual(len(labelled), 2)  # once per group
         self.assertEqual(sum(1 for t in out.values() if "rule" in t), 1)
 
-    def test_kind_icon_sits_between_status_and_label(self):
+    def test_kind_icon_positions(self):
         h = FakeHerdr([agent("p1", "w1", "idle", kind="claude"), agent("p2", "w2", "blocked", seq=2, kind="gemini"),
                        agent("p3", "w3", "idle", seq=3, kind="mystery")],
                       [space("w1", "api", 1), space("w2", "web", 2), space("w3", "docs", 3)])
-        out, *_ = self.run_compute(h, opt=opts(show_icon=True))
+        self.assertEqual(covrd.DEFAULTS["kind_icon"], "right")
+        out, *_ = self.run_compute(h, opt=opts(kind_icon="inline"))   # [status] [kind] [label], state colour
         self.assertEqual(self.text(out["p1"]["head"]), "○ ✻ api")
         self.assertEqual(self.text(out["p2"]["head"]), "× ✦ web")
         self.assertEqual(self.text(out["p3"]["head"]), f"○ {covrd.ICON_OTHER} docs")
-        self.assertTrue(covrd.DEFAULTS["show_icon"])
+        self.assertFalse(any("icon" in t or "icon_r" in t for t in out.values()))
+        for where, key in (("left", "icon"), ("right", "icon_r")):           # own token, brand colour, 4 cells
+            out, *_ = self.run_compute(h, opt=opts(kind_icon=where))
+            self.assertEqual(out["p2"][key], "✦")              # blocked: brand colour
+            self.assertEqual(out["p1"][key], "✻")   # idle: brand colour too
+            self.assertEqual(self.text(out["p1"]["head"]), "○ api")
+            self.assertTrue(all(covrd.cells(t["head"]) <= covrd.sidebar_width() - 7 for t in out.values()))
+            self.assertNotIn("icon_r" if key == "icon" else "icon", out["p1"])
+        out, *_ = self.run_compute(h, opt=opts(kind_icon="off"))
+        self.assertEqual(self.text(out["p1"]["head"]), "○ api")
+        self.assertFalse(any("icon" in t or "icon_r" in t for t in out.values()))
+
+    def test_icon_token_dims_when_asleep(self):
+        h = FakeHerdr([agent("p1", "w1", "idle", kind="claude")], [space("w1", "web", 1)])
+        out, *_ = self.run_compute(h, opt=opts(kind_icon="right"),
+                                   memo={"since": {"p1": {"seq": 1, "since": time.time() - 7200, "st": "idle"}}})
+        self.assertEqual(out["p1"]["icon_r"], covrd.ZW * 2 + "✻")   # asleep: dimmed with the row
+
+    def test_show_icon_false_from_0_5_0_still_turns_icons_off(self):
+        with open(os.path.join(covrd.CFG_DIR, "config.toml"), "w") as f:
+            f.write("show_icon = false\n")
+        try:
+            self.assertEqual(covrd.options()["kind_icon"], "off")
+        finally:
+            os.remove(os.path.join(covrd.CFG_DIR, "config.toml"))
 
     def test_icons_never_reuse_a_state_glyph(self):
         marks = set(covrd.ICON.values()) | {covrd.ICON_OTHER}
@@ -468,7 +493,7 @@ class Identity(Base):
     def test_look_alike_rows_get_task_tags(self):
         h = FakeHerdr([agent("p1", "w1", "idle", title="Docs refresh"), agent("p2", "w1", "idle", seq=2, title="Login bug")],
                       [space("w1", "web", 1)])
-        out, *_ = self.run_compute(h, opt=opts(show_icon=False))  # 26 cells: icons would shorten the name
+        out, *_ = self.run_compute(h)
         self.assertEqual(self.text(out["p1"]["head"]), "○ web · Docs refresh")
         self.assertEqual(self.text(out["p2"]["head"]), "○ web · Login bug")
 
@@ -476,7 +501,7 @@ class Identity(Base):
         h = FakeHerdr([agent("p1", "w1", "idle", title="Docs refresh"), agent("p2", "w1", "idle", seq=2, title="Login bug"),
                        agent("p3", "w1", "idle", seq=3, title="Cache rewrite")],
                       [space("w1", "web", 1)], [{"tab_id": "w1:t1", "label": "review"}])
-        out, *_ = self.run_compute(h, opt=opts(group_by="project", show_icon=False))  # 26 cells: no room for the icon too
+        out, *_ = self.run_compute(h, opt=opts(group_by="project"))  # 26 cells: no room for the icon too
         self.assertEqual(len({t["head"] for t in out.values()}), 3)
         self.assertTrue(all("rev" in t["head"] for t in out.values()))
         out, *_ = self.run_compute(h, opt=opts(group_by="project", disambiguate=False))
@@ -568,6 +593,18 @@ class Lifecycle(unittest.TestCase):
         finally:
             covrd.SOCK = saved
 
+    def test_tokens_are_taken_back_when_a_pane_stops_being_an_agent(self):
+        sent, saved = [], (covrd.report, covrd.call)
+        try:
+            covrd.report = lambda kind, target, set_=None, clear=(): sent.append((target, dict(set_ or {}), list(clear)))
+            covrd.call = lambda method, params=None: {"agents": []} if method == "agent.list" else {}
+            memo = {"pushed": {"p1": {"head": "× api", "wait": "↳ Allow?"}, "p2": {"head": "○ web"}}}
+            covrd.apply({"p2": {"head": "○ web"}}, {}, {"x": 1}, memo)   # p1's agent exited
+            self.assertEqual(sent, [("p1", {}, ["head", "wait"])])
+            self.assertEqual(set(memo["pushed"]), {"p2"})
+        finally:
+            covrd.report, covrd.call = saved
+
     def test_herdr_dirs_come_from_the_plugin_dirs(self):
         # herdr passes <config>/plugins/config/<id> and <state>/plugins/<id>; the herdr dirs are above them
         self.assertEqual(covrd.HERDR_CONFIG_DIR, os.path.join(_TMP, "herdr-config"))
@@ -602,10 +639,13 @@ class Lifecycle(unittest.TestCase):
         a, b = covrd.next_seq(), covrd.next_seq()
         self.assertEqual((a, b), (10 ** 13 + 1, 10 ** 13 + 2))
 
-    def test_lost_tokens_needs_all_of_a_panes_tokens_gone(self):
-        memo = {"pushed": {"p1": {"head": "x", "rank": "1"}}, "live": {"p1": {"rank"}}}
+    def test_lost_tokens_needs_all_of_a_panes_tokens_gone_or_its_head(self):
+        memo = {"pushed": {"p1": {"head": "x", "rank": "1", "wait": "?"}}, "live": {"p1": {"head", "rank"}}}
         self.assertFalse(covrd.lost_tokens(memo))  # one value dropped (e.g. sanitised): not a restart
         memo["live"] = {"p1": set()}
+        self.assertTrue(covrd.lost_tokens(memo))
+        memo["live"] = {"p1": {"icon_r"}}          # the row went but herdr kept the icon: still lost
+        memo["pushed"]["p1"]["icon_r"] = "✻"
         self.assertTrue(covrd.lost_tokens(memo))
         memo["live"] = {}
         self.assertFalse(covrd.lost_tokens(memo))  # the pane is gone, not lost

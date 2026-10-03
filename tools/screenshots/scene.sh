@@ -104,6 +104,7 @@ json.dump(m, open(path, "w"))
 EOF
 act start
 until_t 20 all_heads >/dev/null
+[ -n "${KIND_ICON:-}" ] && { opt kind_icon "$KIND_ICON"; sleep 2; }   # left | inline | right | off
 
 shot covr-light
 opt group_by project; shot covr-project; opt group_by none

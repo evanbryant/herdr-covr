@@ -8,7 +8,8 @@ The terminal's default colours and 16-colour palette are catppuccin latte (light
 the herdr theme used for the capture; herdr itself draws with truecolor, which passes through as is.
 Open the page in any browser, or screenshot it headless (e.g. playwright: page.locator(".term").screenshot()).
 """
-import argparse, html, re, unicodedata
+import argparse
+import os, html, re, unicodedata
 
 THEMES = {
     "dark": dict(fg=(205, 214, 244), bg=(30, 30, 46), base16=[
@@ -143,6 +144,11 @@ def main():
     a.add_argument("--sidebar", action="store_true")
     a.add_argument("--rows")
     a.add_argument("--title", default="")
+    a.add_argument("--font", action="append", default=[], metavar="FILE",
+                   help="font file to draw with, in fallback order (e.g. your terminal's font, then its symbol "
+                        "fallback); repeatable. Default: DejaVu Sans Mono")
+    a.add_argument("--size", type=float, default=15, help="font size in px (default 15)")
+    a.add_argument("--line", type=float, default=1.3, help="line height (default 1.3)")
     o = a.parse_args()
     text = open(o.ans, encoding="utf-8", errors="replace").read()
     t = THEMES[o.theme]
@@ -150,10 +156,12 @@ def main():
     rows = tuple(int(x) for x in o.rows.split(":")) if o.rows else None
     body = convert(text, t, cols, rows)
     bg, fg = "rgb%s" % (t["bg"],), "rgb%s" % (t["fg"],)
+    faces = "".join(f"@font-face{{font-family:t{i};src:url('file://{os.path.abspath(f)}')}}\n" for i, f in enumerate(o.font))
+    family = ",".join([f"t{i}" for i in range(len(o.font))] + ["'DejaVu Sans Mono'", "'Menlo'", "monospace"])
     page = f"""<!doctype html><meta charset="utf-8"><title>{html.escape(o.title)}</title>
 <style>
-body{{margin:0;background:transparent}}
-.term{{display:inline-block;white-space:pre;font:15px/1.3 'DejaVu Sans Mono','Menlo',monospace;color:{fg};background:{bg};
+{faces}body{{margin:0;background:transparent}}
+.term{{display:inline-block;white-space:pre;font:{o.size:g}px/{o.line:g} {family};color:{fg};background:{bg};
 padding:14px 16px;border-radius:10px}}
 .c1,.c2{{display:inline-block;text-align:center;overflow:visible}} .c1{{width:1ch}} .c2{{width:2ch}}
 </style><div class="term">{body}</div>
