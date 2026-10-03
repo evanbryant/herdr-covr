@@ -1,6 +1,6 @@
 id = "covr.sidebar"
 name = "covr"
-version = "0.5.1"
+version = "0.5.2"
 min_herdr_version = "0.9.0"
 description = "Minimal attention-first Spaces/Agents sidebar: one line per entry, shape glyphs, kind optional"
 platforms = ["linux", "macos", "windows"]
@@ -132,5 +132,5 @@ id = "settings"
 title = "covr settings"
 placement = "popup"
 width = 84
-height = 21
+height = 26
 command = ["python3", "bin/settings.py"]

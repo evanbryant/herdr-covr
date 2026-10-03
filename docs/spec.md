@@ -1,6 +1,6 @@
 # covr: design and behaviour
 
-This is how covr (plugin id `covr.sidebar`, version 0.5.1) draws herdr's sidebar and how its daemon behaves. The README covers installation and a quick tour.
+This is how covr (plugin id `covr.sidebar`, version 0.5.2) draws herdr's sidebar and how its daemon behaves. The README covers installation and a quick tour.
 
 ## Agents
 
@@ -115,22 +115,24 @@ Options are stored in `$(herdr plugin config-dir covr.sidebar)/config.toml`. The
 - **Invalid values:** `set` refuses them. In a hand-edited file they are ignored, with one log line and one notification each.
 - **Old Pythons:** before Python 3.11 (no `tomllib`), the file is read by a small built-in parser.
 
-| option | values (default first) |
-|---|---|
-| `group_by` | `none` · `project` · `kind` |
-| `space_sort` | `manual` · `alpha` · `recent` · `activity` |
-| `view` | `triage` · `needs me` · `here+` |
-| `label` | `space` · `task` |
-| `show_tab` | `named` · `always` · `never` |
-| `show_kind` | `never` · `auto` (only while more than one kind runs) · `always` |
-| `kind_icon` | `left` · `inline` · `right` · `off` (where the agent kind icon goes; brand-coloured at left and right) |
-| `show_task` | `attention` (blocked reason and finished task) · `all` · `never` |
-| `disambiguate` | `true` · `false` |
-| `stale_after` | `30m`; any duration from `1m` to `30d` |
-| `seen_after` | `5s`; `off`, or any duration from `1s` to `1h` |
-| `tick_seconds` | `5`; from 2 to 60 |
-| `layout` | `auto` · `light` · `dark` (used by `install-layout`) |
-| `age_source` | `observed` · `claude-transcripts` (opt-in: reads transcript files under `~/.claude*/projects`) |
+Rows are grouped by the settings popup's sections; the last two options are file-only.
+
+| section | option | values (default first) |
+|---|---|---|
+| Sidebar | `view` | `triage` · `needs me` · `here+` |
+| | `group_by` | `none` · `project` · `kind` |
+| | `space_sort` | `manual` · `alpha` · `recent` · `activity` |
+| Rows | `label` | `space` · `task` |
+| | `show_tab` | `named` · `always` · `never` |
+| | `show_kind` | `never` · `auto` (only while more than one kind runs) · `always` |
+| | `kind_icon` | `right` · `left` · `inline` · `off` (where the agent kind icon goes; brand-coloured at left and right) |
+| | `show_task` | `attention` (blocked reason and finished task) · `all` · `never` |
+| | `disambiguate` | `true` · `false` |
+| Timing | `stale_after` | `30m`; any duration from `1m` to `30d` |
+| | `seen_after` | `5s`; `off`, or any duration from `1s` to `1h` |
+| | `age_source` | `observed` · `claude-transcripts` (opt-in: reads transcript files under `~/.claude*/projects`) |
+| file only | `tick_seconds` | `5`; from 2 to 60 |
+| | `layout` | `auto` · `light` · `dark` (used by `install-layout`) |
 
 ## Actions
 

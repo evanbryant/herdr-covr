@@ -65,7 +65,7 @@ description = "covr: settings"
 
 <img src="docs/images/settings.png" alt="the covr settings popup over a herdr session">
 
-↑/↓ picks an option and ←/→ changes it; the sidebar updates straight away. `s` starts or stops the daemon.
+Options are grouped into Sidebar, Rows and Timing. ↑/↓ picks an option and ←/→ changes it; the sidebar updates straight away. `s` starts or stops the daemon.
 
 Every option is also an action you can bind: `cycle-view`, `toggle-group`, `cycle-kind`, `toggle-label`, `cycle-space-sort`, `pin-agent`, `pin-space`, `start`, `stop`, `install-layout`, `uninstall-layout`. `herdr plugin action list --plugin covr.sidebar` lists them.
 

@@ -10,20 +10,27 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import covrd  # noqa: E402
 
-ITEMS = [
-    ("group_by", "Group agents", ["none", "project", "kind"]),
-    ("space_sort", "Sort spaces", ["manual", "alpha", "recent", "activity"]),
-    ("view", "Agent view", ["triage", "needs me", "here+"]),
-    ("label", "Row label", ["space", "task"]),
-    ("show_tab", "Tab name on rows", ["named", "always", "never"]),
-    ("show_kind", "Show agent kind", ["never", "auto", "always"]),
-    ("kind_icon", "Agent kind icon (✻ ◈ ✦ …)", ["left", "inline", "right", "off"]),
-    ("show_task", "Second-line text", ["attention", "all", "never"]),
-    ("disambiguate", "Task tags on look-alike rows", [True, False]),
-    ("stale_after", "Idle → asleep (◗) after", ["15m", "30m", "1h", "2h", "4h"]),
-    ("seen_after", "Selected ✓ → viewed after", ["off", "5s", "15s", "1m"]),
-    ("age_source", "Ages of already-running agents", ["observed", "claude-transcripts"]),
+SECTIONS = [
+    ("Sidebar", [
+        ("view", "Agent view", ["triage", "needs me", "here+"]),
+        ("group_by", "Group agents", ["none", "project", "kind"]),
+        ("space_sort", "Sort spaces", ["manual", "alpha", "recent", "activity"]),
+    ]),
+    ("Rows", [
+        ("label", "Row label", ["space", "task"]),
+        ("show_tab", "Tab name on rows", ["named", "always", "never"]),
+        ("show_kind", "Show agent kind", ["never", "auto", "always"]),
+        ("kind_icon", "Agent kind icon (✻ ◈ ✦ …)", ["right", "left", "inline", "off"]),
+        ("show_task", "Second-line text", ["attention", "all", "never"]),
+        ("disambiguate", "Task tags on look-alike rows", [True, False]),
+    ]),
+    ("Timing", [
+        ("stale_after", "Idle → asleep (◗) after", ["15m", "30m", "1h", "2h", "4h"]),
+        ("seen_after", "Selected ✓ → viewed after", ["off", "5s", "15s", "1m"]),
+        ("age_source", "Ages of already-running agents", ["observed", "claude-transcripts"]),
+    ]),
 ]
+ITEMS = [item for _, items in SECTIONS for item in items]
 HELP = {
     "group_by": "project: projects ordered by their best agent · kind: by agent type",
     "space_sort": "manual never moves spaces · other modes reorder (manual order is restored)",
@@ -48,13 +55,16 @@ def show(v):
 def screen(sel, height):
     """The popup's lines as (text, style) with style in bold | dim | reverse | normal; the last line is the footer."""
     opt, pins = covrd.options(), covrd.load_pins()
+    status = "daemon running" if covrd.alive() else "daemon STOPPED (s to start)"
     lines = [("covr — settings", "bold"),
-             ("daemon running" if covrd.alive() else "daemon STOPPED (s to start)", "dim"), ("", "normal")]
-    for i, (key, label, _) in enumerate(ITEMS):
-        lines.append((f"{label:<30} ‹ {show(opt.get(key))} ›", "reverse" if i == sel else "normal"))
-    lines += [("", "normal"), (HELP.get(ITEMS[sel][0], ""), "dim"), ("", "normal"),
-              (f"pinned: {len(pins['agents'])} agents · {len(pins['spaces'])} spaces"
-               "   (actions: pin-agent, pin-space)", "dim")]
+             (f"{status} · pinned: {len(pins['agents'])} agents, {len(pins['spaces'])} spaces", "dim")]
+    i = 0
+    for title, items in SECTIONS:
+        lines += [("", "normal"), (title, "bold")]
+        for key, label, _ in items:
+            lines.append((f"  {label:<31} ‹ {show(opt.get(key))} ›", "reverse" if i == sel else "normal"))
+            i += 1
+    lines += [("", "normal"), (HELP.get(ITEMS[sel][0], ""), "dim")]
     lines = lines[:max(1, height - 1)]
     lines += [("", "normal")] * max(0, height - 1 - len(lines))
     return lines + [(FOOTER, "dim")]
