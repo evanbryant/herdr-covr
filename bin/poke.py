@@ -63,5 +63,7 @@ if daemon_holds_lock():
         sys.exit(0)
     except (OSError, ValueError):
         pass
+if os.path.exists(os.path.join(run, "stopped")):
+    sys.exit(0)  # the user stopped the daemon: only start or a herdr restart brings it back
 here = os.path.dirname(os.path.abspath(__file__))
 sys.exit(subprocess.call([sys.executable, os.path.join(here, "covrd.py"), "poke"]))

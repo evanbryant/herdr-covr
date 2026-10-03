@@ -9,9 +9,10 @@ Per workspace: alert, dirty. Options live in $HERDR_PLUGIN_CONFIG_DIR/config.tom
 the daemon never rewrites herdr's own config.toml (only the install-layout action does, see layout.py).
 
 One daemon per herdr session (socket): its pid, lock, memo and log live in
-$HERDR_PLUGIN_STATE_DIR/s/<hash of the socket path>/. Pins are shared by all sessions.
+$HERDR_PLUGIN_STATE_DIR/s/<hash of the socket path>/. Pins are per session too (pins.json in that dir).
 """
-import errno, glob, hashlib, json, os, re, signal, socket, subprocess, sys, time, unicodedata
+import glob, hashlib, json, os, re, select, signal, socket, subprocess, sys, threading, time, traceback, unicodedata
+from concurrent.futures import ThreadPoolExecutor
 
 WIN = os.name == "nt"
 if WIN:
@@ -49,10 +50,12 @@ HERDR_CONFIG_DIR, HERDR_STATE_DIR = _herdr_home("config"), _herdr_home("state")
 CFG_DIR = os.environ.get("HERDR_PLUGIN_CONFIG_DIR") or os.path.join(HERDR_CONFIG_DIR, "plugins", "config", PID)
 STATE_DIR = os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.path.join(HERDR_STATE_DIR, "plugins", PID)
 HERDR = os.environ.get("HERDR_BIN_PATH") or "herdr"
-SOCK = os.environ.get("HERDR_SOCKET_PATH") or os.path.join(HERDR_CONFIG_DIR, "herdr.sock")
+DEFAULT_SOCK = os.path.join(HERDR_CONFIG_DIR, "herdr.sock")
+SOCK = os.environ.get("HERDR_SOCKET_PATH") or DEFAULT_SOCK
 SESSION = hashlib.sha1(SOCK.encode()).hexdigest()[:12]
 RUN_DIR = os.path.join(STATE_DIR, "s", SESSION)
 PIDFILE, LOCK, MEMO, LOG, WAKE = (os.path.join(RUN_DIR, n) for n in ("covrd.pid", "covrd.lock", "memo.json", "covrd.log", "wake"))
+STOPPED, SPAWN_LOCK = os.path.join(RUN_DIR, "stopped"), os.path.join(RUN_DIR, "spawn.lock")
 LEGACY_PID, LEGACY_MEMO = os.path.join(STATE_DIR, "covrd.pid"), os.path.join(STATE_DIR, "memo.json")  # before 0.2
 HERDR_CONFIG = os.path.join(HERDR_CONFIG_DIR, "config.toml")
 GONE_AFTER = 60  # seconds without a reachable socket before the daemon decides its server is gone for good
@@ -67,7 +70,7 @@ DEFAULTS = {"layout": "auto", "age_source": "observed", "seen_after": "5s", "lab
 CYCLES = {"view": ["triage", "needs me", "here+"], "group_by": ["none", "project", "kind"],
           "show_kind": ["never", "auto", "always"], "label": ["space", "task"],
           "show_task": ["attention", "all", "never"], "space_sort": ["manual", "alpha", "recent", "activity"],
-          "show_tab": ["named", "always", "never"], "kind_icon": ["left", "inline", "right", "off"], "layout": ["auto", "light", "dark"],
+          "show_tab": ["named", "always", "never"], "kind_icon": ["right", "left", "inline", "off"], "layout": ["auto", "light", "dark"],
           "age_source": ["observed", "claude-transcripts"]}
 # one single-width mark per agent kind, shown after the state glyph. Claude's ✻ and Gemini's ✦ are their own marks;
 # the rest are the nearest plain shape. None of them reuses a state glyph (× ✓ ◐ ○ ◗ ·).
@@ -78,18 +81,38 @@ ICON = {"claude": "✻", "codex": "◈", "gemini": "✦", "grok": "⊘", "cursor
 ICON_OTHER = "▫"
 GLYPH = {"blocked": "×", "done": "✓", "working": "◐", "idle": "○", "unknown": "·", "stale": "◗"}
 PRIO = {"blocked": 4, "done": 3, "working": 2, "idle": 1, "unknown": 0}
-PINS = os.path.join(STATE_DIR, "pins.json")
+PINS = os.path.join(RUN_DIR, "pins.json")   # pane and workspace ids only mean something inside one session
+LEGACY_PINS = os.path.join(STATE_DIR, "pins.json")  # before 0.6: one file shared by every session
+WTOKENS = ["alert", "dirty", "spin"]
 TOKENS = ["pin", "icon", "head", "icon_r", "age", "age_stale", "kind", "tag", "wait", "done", "task", "rule", "rank", "kgrp", "grp"]
 
 
+def private_dir(path):
+    """Plugin state is readable only by you: directories 0700 (the mode is ignored on Windows)."""
+    os.makedirs(path, mode=0o700, exist_ok=True)
+
+
+def open_log():
+    """covrd.log for appending, created owner-only."""
+    private_dir(RUN_DIR)
+    return os.open(LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
+
+
+DAEMON = {"on": False}  # set in run(): the daemon's own stderr is covrd.log and follows its rotation
+
+
 def log(*a):
-    os.makedirs(RUN_DIR, mode=0o700, exist_ok=True)
     try:
         if os.path.getsize(LOG) > LOG_MAX:
             os.replace(LOG, LOG + ".1")  # one rotation: the previous log is kept, older ones dropped
+            if DAEMON["on"] and not WIN:  # (on Windows its stdio is not the log: it must not hold it open)
+                fd = open_log()  # a traceback must not go to the rotated (later deleted) file
+                os.dup2(fd, 1)
+                os.dup2(fd, 2)
+                os.close(fd)
     except OSError:
         pass
-    with open(LOG, "a", encoding="utf-8") as f:
+    with os.fdopen(open_log(), "a", encoding="utf-8") as f:
         f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + " ".join(str(x) for x in a) + "\n")
 
 
@@ -105,9 +128,9 @@ def log_once(key, *a):
     notify(" ".join(str(x) for x in a)[:240])
 
 
-def read_text(path, default=None):
+def read_text(path, default=None, newline=None):
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", newline=newline) as f:
             return f.read()
     except OSError:
         return default
@@ -122,45 +145,92 @@ def read_json(path, default=None):
 
 
 # ---------------- herdr access ----------------
+class HerdrError(RuntimeError):
+    """herdr answered with an error; .code is its error code (pane_not_found, invalid_request, …)."""
+
+    def __init__(self, method, err):
+        self.code = err.get("code", "") if isinstance(err, dict) else ""
+        self.message = err.get("message", "") if isinstance(err, dict) else str(err)
+        super().__init__(f"{method}: {err}")
+
+
+class ServerGone(OSError):
+    """herdr's socket is missing, refuses us, or does not answer within CALL_TIMEOUT."""
+
+
+CALL_TIMEOUT = 5
+
+
+def _pipe_exchange(req):
+    """Windows: one request over the named pipe. Retries briefly while no pipe instance is free."""
+    for attempt in range(20):
+        buf = b""
+        try:
+            with open("\\\\.\\pipe\\" + SOCK, "r+b", buffering=0) as f:
+                f.write(req)
+                while not buf.endswith(b"\n"):
+                    c = f.read(1 << 16)
+                    if not c:
+                        break
+                    buf += c
+            return buf
+        except OSError as e:
+            # A pipe server makes a new instance after each client, so for a moment there is none
+            # (file not found) or all are taken (231, ERROR_PIPE_BUSY). Retry briefly before deciding
+            # the server is gone: 0.3 s for "not found", 1 s for "busy".
+            missing = isinstance(e, FileNotFoundError)
+            if not (missing or getattr(e, "winerror", None) == 231) or attempt >= (5 if missing else 19):
+                raise ServerGone(str(e)) if missing or getattr(e, "winerror", None) == 231 else e
+            time.sleep(0.05)
+    return b""
+
+
 def call(method, params=None):
     """One request to herdr's API: newline-delimited JSON over its local socket, which is a Unix socket
-    on Linux/macOS and a named pipe (\\\\.\\pipe\\<socket path>) on Windows."""
+    on Linux/macOS and a named pipe (\\\\.\\pipe\\<socket path>) on Windows. A server that is missing or
+    does not answer within CALL_TIMEOUT raises ServerGone."""
     req = (json.dumps({"id": "covr", "method": method, "params": params or {}}) + "\n").encode()
     buf = b""
     if WIN:
-        for attempt in range(20):
+        # a blocking pipe read has no timeout of its own: do it on a worker thread and stop waiting after
+        # CALL_TIMEOUT (a hung herdr then costs one parked thread, not the daemon)
+        box = {}
+
+        def work():
             try:
-                with open("\\\\.\\pipe\\" + SOCK, "r+b", buffering=0) as f:
-                    f.write(req)
-                    while not buf.endswith(b"\n"):
-                        c = f.read(1 << 16)
-                        if not c:
-                            break
-                        buf += c
-                break
-            except OSError as e:
-                # A pipe server makes a new instance after each client, so for a moment there is none
-                # (file not found) or all are taken (231, ERROR_PIPE_BUSY). Retry briefly before deciding
-                # the server is gone: 0.3 s for "not found", 1 s for "busy".
-                missing = isinstance(e, FileNotFoundError)
-                if not (missing or getattr(e, "winerror", None) == 231) or attempt >= (5 if missing else 19):
-                    raise
-                buf = b""
-                time.sleep(0.05)
+                box["buf"] = _pipe_exchange(req)
+            except BaseException as e:
+                box["err"] = e
+        t = threading.Thread(target=work, daemon=True)
+        t.start()
+        t.join(CALL_TIMEOUT)
+        if t.is_alive():
+            raise ServerGone(f"{method}: no answer in {CALL_TIMEOUT}s")
+        if "err" in box:
+            raise box["err"]
+        buf = box["buf"]
     else:
         s = socket.socket(socket.AF_UNIX)
-        s.settimeout(5)
-        s.connect(SOCK)
-        s.sendall(req)
-        while not buf.endswith(b"\n"):
-            c = s.recv(1 << 16)
-            if not c:
-                break
-            buf += c
-        s.close()
+        s.settimeout(CALL_TIMEOUT)
+        try:
+            s.connect(SOCK)
+        except (FileNotFoundError, ConnectionRefusedError, socket.timeout) as e:
+            s.close()
+            raise ServerGone(str(e))
+        try:
+            s.sendall(req)
+            while not buf.endswith(b"\n"):
+                c = s.recv(1 << 16)
+                if not c:
+                    break
+                buf += c
+        except socket.timeout:
+            raise ServerGone(f"{method}: no answer in {CALL_TIMEOUT}s")
+        finally:
+            s.close()
     r = json.loads(buf)
     if "error" in r:
-        raise RuntimeError(f"{method}: {r['error']}")
+        raise HerdrError(method, r["error"])
     return r["result"]
 
 
@@ -180,10 +250,31 @@ def next_seq():
     return SEQ["last"]
 
 
+REPORT = {"socket": True}
+
+
 def report(kind, target, set_=None, clear=()):
+    """Set and clear one pane's (or workspace's) tokens: over the socket ({pane,workspace}.report_metadata,
+    a null value clears), or with the `herdr … report-metadata` CLI when the server does not know that method."""
+    seq = next_seq() if SEQ["on"] else None
+    if REPORT["socket"]:
+        tokens = dict(set_ or {}, **{k: None for k in clear})
+        params = {"pane_id" if kind == "pane" else "workspace_id": target, "source": SRC, "tokens": tokens}
+        if seq is not None:
+            params["seq"] = seq
+        try:
+            call(f"{kind}.report_metadata", params)
+            return
+        except HerdrError as e:
+            if e.code in ("pane_not_found", "workspace_not_found"):
+                return  # it closed between our read and this report: nothing left to set or clear
+            if not (e.code == "invalid_request" and "unknown variant" in e.message):
+                raise
+            REPORT["socket"] = False  # a server without these methods
+            log("socket reports unavailable, using the herdr CLI:", e)
     args = [kind, "report-metadata", target, "--source", SRC]
-    if SEQ["on"]:
-        args += ["--seq", str(next_seq())]
+    if seq is not None:
+        args += ["--seq", str(seq)]
     for k, v in (set_ or {}).items():
         args += ["--token", f"{k}={v}"]
     for k in clear:
@@ -209,33 +300,33 @@ def parse_value(v):
     v = v.split("#", 1)[0].strip()
     if v in ("true", "false"):
         return v == "true", True
-    if re.fullmatch(r"[+-]?\d+", v):
+    if re.fullmatch(r"[+-]?[0-9]+", v):
         return int(v), True
     return None, False
 
 
 def read_flat(path):
-    """Top-level `key = value` lines of a TOML file, for Pythons without tomllib (< 3.11).
+    return read_flat_text(read_text(path, "") or "")
+
+
+def read_flat_text(text):
+    """Top-level `key = value` lines of a TOML text, for Pythons without tomllib (< 3.11).
     Stops at the first [table] header, so only top-level keys are read."""
     out = {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                s = line.strip()
-                if s.startswith("["):
-                    break
-                if not s or s.startswith("#") or "=" not in s:
-                    continue
-                k, _, v = s.partition("=")
-                val, ok = parse_value(v)
-                if ok:
-                    out[k.strip().strip('"')] = val
-    except OSError:
-        pass
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("["):
+            break
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        k, _, v = s.partition("=")
+        val, ok = parse_value(v)
+        if ok:
+            out[k.strip().strip('"')] = val
     return out
 
 
-DURATION = re.compile(r"(\d+)\s*([smhd]?)")
+DURATION = re.compile(r"([0-9]+)\s*([smhd]?)")
 
 
 def validate(key, value):
@@ -267,27 +358,37 @@ def validate(key, value):
             return None, "stale_after must be a duration between 1m and 30d, like 45m, 2h or 1d"
         return str(value).strip(), None
     if isinstance(d, int):
-        try:
-            v = int(value)
-        except (TypeError, ValueError):
-            return None, f"{key} must be a whole number"
+        if isinstance(value, bool) or not re.fullmatch(r"\s*[+-]?[0-9]+\s*", str(value)):
+            return None, f"{key} must be a whole number"  # also refuses inf / nan and non-ASCII digits
+        v = int(value)
         return (v, None) if 2 <= v <= 60 else (None, f"{key} must be between 2 and 60")
     return value, None
 
 
+OPTIONS = os.path.join(CFG_DIR, "config.toml")
+
+
+def read_options():
+    """The option file's top-level keys ({} when there is none). Raises ValueError when it is not valid TOML.
+    A UTF-8 byte-order mark (some Windows editors add one) is skipped."""
+    text = read_text(OPTIONS)
+    if text is None:
+        return {}
+    text = text.lstrip("\ufeff")
+    if tomllib:
+        try:
+            return tomllib.loads(text)
+        except tomllib.TOMLDecodeError as e:
+            raise ValueError(f"config.toml is not valid TOML ({e})")
+    return read_flat_text(text)
+
+
 def options():
     o = dict(DEFAULTS)
-    p = os.path.join(CFG_DIR, "config.toml")
-    if not os.path.exists(p):
-        return o
     try:
-        if tomllib:
-            with open(p, "rb") as f:
-                raw = tomllib.load(f)
-        else:
-            raw = read_flat(p)
-    except Exception as e:  # a torn or hand-broken file: keep defaults for this tick
-        log_once(("unreadable", repr(e)), "options file unreadable, using defaults:", repr(e))
+        raw = read_options()
+    except ValueError as e:  # a torn or hand-broken file: keep defaults for this tick
+        log_once(("unreadable", str(e)), "options file unreadable, using defaults:", e)
         return o
     if raw.get("show_icon") is False and "kind_icon" not in raw:
         o["kind_icon"] = "off"  # 0.5.0 called it show_icon (true / false)
@@ -303,28 +404,71 @@ def options():
 
 
 def write_option(key, value):
+    """Set one option in the option file. Only that key's line changes (or is appended): other options,
+    comments and invalid values someone is still fixing stay as they are. A file that does not parse is
+    refused (ValueError) instead of being rewritten from defaults."""
+    if key not in DEFAULTS:
+        raise ValueError(f"unknown option {key!r}")
+    read_options()  # raises on a broken file: never overwrite what we cannot read
     o = options()
     if value == "cycle":
-        seq = CYCLES[key]
-        value = seq[(seq.index(o[key]) + 1) % len(seq)] if o[key] in seq else seq[0]
+        if isinstance(DEFAULTS[key], bool):
+            value = not o[key]
+        elif key in CYCLES:
+            seq = CYCLES[key]
+            value = seq[(seq.index(o[key]) + 1) % len(seq)] if o[key] in seq else seq[0]
+        else:
+            raise ValueError(f"{key} takes a value, it cannot cycle")
     else:
         value, why = validate(key, value)
         if why:
             raise ValueError(why)
-    o[key] = value
-    os.makedirs(CFG_DIR, exist_ok=True)
-    text = "# covr options — edited by actions; the daemon picks changes up live\n"
-    for k in DEFAULTS:
-        v = o[k]
-        text += f"{k} = {json.dumps(v) if not isinstance(v, bool) else str(v).lower()}\n"
-    write_atomic(os.path.join(CFG_DIR, "config.toml"), text)
+    line = f"{key} = {json.dumps(value) if not isinstance(value, bool) else str(value).lower()}"
+    text = read_text(OPTIONS, newline="") or ""  # newline="": the file's line endings stay as they are
+    bom = "\ufeff" if text.startswith("\ufeff") else ""
+    text = text[len(bom):] or "# covr options — edited by actions; the daemon picks changes up live\n"
+    nl = "\r\n" if "\r\n" in text else "\n"
+    lines = text.splitlines(keepends=True)
+    top = next((i for i, l in enumerate(lines) if l.lstrip().startswith("[")), len(lines))  # top-level keys end here
+    for i in range(top):
+        m = re.match(rf"""\s*(["']?){re.escape(key)}\1\s*=\s*(.*?)(\r?\n)?$""", lines[i])
+        if m:
+            lines[i] = line + value_comment(m.group(2)) + (m.group(3) or "")
+            break
+    else:
+        if top and not lines[top - 1].endswith("\n"):
+            lines[top - 1] += nl
+        lines.insert(top, line + nl)
+    new = bom + "".join(lines)
+    if tomllib:
+        try:
+            if tomllib.loads(new.lstrip("\ufeff")).get(key) != value:
+                raise ValueError(f"could not set {key} in config.toml; edit it by hand")
+        except tomllib.TOMLDecodeError:
+            raise ValueError("the change would make config.toml invalid; edit it by hand")
+    private_dir(CFG_DIR)
+    write_atomic(OPTIONS, new, newline="")
     return value
 
 
-def write_atomic(path, text):
-    """Readers never see a half-written file (the popup, actions and the daemon share these files)."""
+def value_comment(v):
+    """The trailing `# comment` (with the spaces before it) after a TOML value, or ""."""
+    if v[:1] in ('"', "'"):
+        end = v.find(v[0], 1)
+        rest = v[end + 1:] if end > 0 else ""
+    else:
+        rest = v[v.find("#"):] if "#" in v else ""
+        rest = " " + rest if rest else ""
+    m = re.match(r"\s*#.*", rest)
+    return re.match(r"\s*", rest).group(0) + rest.strip() if m else ""
+
+
+def write_atomic(path, text, newline=None):
+    """Readers never see a half-written file (the popup, actions and the daemon share these files).
+    A symlinked file (dotfile managers) is written through: its target changes, the link stays."""
+    path = os.path.realpath(path)
     tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
+    with open(tmp, "w", encoding="utf-8", newline=newline) as f:
         f.write(text)
     try:
         os.chmod(tmp, os.stat(path).st_mode & 0o777)  # keep an existing file's mode (herdr's config.toml)
@@ -334,13 +478,30 @@ def write_atomic(path, text):
 
 
 def load_pins():
+    """This session's pins. A pre-0.6 shared pins.json is taken over by the default session (its ids are
+    session-local, so they are only right there, where most pins were made); named sessions start empty."""
+    if not os.path.exists(PINS) and os.path.exists(LEGACY_PINS) and SOCK == DEFAULT_SOCK:
+        try:
+            private_dir(RUN_DIR)
+            os.replace(LEGACY_PINS, PINS)
+        except OSError:
+            pass
     p = read_json(PINS, {})
     if not isinstance(p, dict):
         p = {}
     return {"agents": list(p.get("agents", [])), "spaces": list(p.get("spaces", []))}
 
 
+def save_pins(p):
+    private_dir(RUN_DIR)
+    write_atomic(PINS, json.dumps(p))
+
+
 def toggle_pin(kind):
+    """Pin or unpin the focused agent (kind "agents") or the current space ("spaces").
+    Returns (target, on); target is None when nothing is focused, on is None for a pane that is not an agent."""
+    if kind not in ("agents", "spaces"):
+        raise ValueError("pin takes agents or spaces")
     ctx = {}
     try:
         ctx = json.loads(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON") or "{}")
@@ -353,15 +514,45 @@ def toggle_pin(kind):
     if not target:
         return None, None
     p = load_pins()
+    if kind == "agents" and target not in p[kind]:
+        try:
+            if target not in {a["pane_id"] for a in call("agent.list")["agents"]}:
+                return target, None  # a plain shell: a pin would do nothing visible
+        except Exception:
+            pass  # herdr unreachable: pin it anyway, the daemon sorts it out
     on = target not in p[kind]
     p[kind] = [x for x in p[kind] if x != target] + ([target] if on else [])
-    os.makedirs(STATE_DIR, exist_ok=True)
-    write_atomic(PINS, json.dumps(p))
+    save_pins(p)
     return target, on
 
 
+PIN_GRACE = 60  # seconds a pinned id may be missing (a restore still in progress) before its pin is dropped
+
+
+def prune_pins(pins, agent_ids, space_ids, memo, now):
+    """Drop pins for agents and spaces that have been gone for PIN_GRACE seconds, from the file too."""
+    missing = memo.setdefault("pin_missing", {})
+    live = {"agents": agent_ids, "spaces": space_ids}
+    changed = False
+    for kind in ("agents", "spaces"):
+        keep = []
+        for x in pins[kind]:
+            if x in live[kind]:
+                missing.pop(x, None)
+                keep.append(x)
+            elif now - missing.setdefault(x, now) < PIN_GRACE:
+                keep.append(x)
+            else:
+                missing.pop(x, None)
+                changed = True
+        pins[kind] = keep
+    if changed:
+        save_pins(pins)
+    return pins
+
+
 def seconds(s):
-    m = re.fullmatch(r"(\d+)\s*([smhd]?)", str(s).strip())
+    m = DURATION.fullmatch(str(s).strip())
     return int(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)] if m else 3600
 
 
@@ -369,7 +560,24 @@ BLANK = "\u2800"  # braille blank: renders empty but is not whitespace, so herdr
 
 
 def cells(s):
-    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 0 if unicodedata.combining(c) else 1 for c in s)
+    """Terminal cells: wide characters 2; combining marks, format characters (zero-width space, joiners) and
+    variation selectors 0; the character a zero-width joiner glues on is drawn inside the one before it."""
+    n, glued, last = 0, False, 0
+    for c in s:
+        if glued:
+            glued = False
+            continue
+        if c == "\u200d":
+            glued = True
+        elif c == "\ufe0f":
+            if last == 1:  # emoji presentation: a narrow symbol (❤, ✔) drawn as a 2-cell emoji
+                n, last = n + 1, 2
+        elif unicodedata.category(c) in ("Mn", "Me", "Cf") or unicodedata.combining(c):
+            continue
+        else:
+            last = 2 if unicodedata.east_asian_width(c) in "WF" else 1
+            n += last
+    return n
 
 
 def fnv1a64(data):
@@ -424,11 +632,25 @@ def herdr_config_value(table, key, text=None):
     return None
 
 
-def pinned_row(glyph, text, age, width):
-    """One composed row: 'glyph text' left, age flush right. Usable cells = width - 1 indent - 1 divider."""
+def cut(text, room):
+    """`text` shortened to at most `room` cells including the …, at a word boundary when one falls in the
+    second half."""
+    if cells(text) <= room:
+        return text
+    t = text
+    while t and cells(t) > room - 1:
+        t = t[:-1]
+    if " " in t[len(t) // 2:] and not text[len(t):len(t) + 1].isspace():
+        t = t.rsplit(" ", 1)[0]
+    return t.rstrip(" ·") + "…"
+
+
+def pinned_row(glyph, text, age, width, suffix=""):
+    """One composed row: 'glyph text' left, age flush right. Usable cells = width - 1 indent - 1 divider.
+    `suffix` (the pin star) is kept whole: the text is shortened to make room for it."""
     usable = min(width - 3, TOKEN_MAX)   # 1 indent + 1 gap + 1 divider; never past herdr's 80-character cap
     right = (" " + age) if age else ""
-    room = usable - cells(right) - 2          # glyph + space
+    room = usable - cells(right) - 2 - cells(suffix)          # glyph + space
     if cells(text) > room:
         parts = text.split(" · ")
         if len(parts) > 1 and cells(" · ".join(parts[1:])) + 5 <= room:
@@ -439,9 +661,8 @@ def pinned_row(glyph, text, age, width):
                 head = head[:-1]
             text = head.rstrip() + "…" + rest
         else:
-            while text and cells(text) > room - 1:
-                text = text[:-1]
-            text = text.rstrip(" ·") + "…"
+            text = cut(text, room)
+    text += suffix
     pad = usable - 2 - cells(text) - cells(right)
     return f"{glyph} {text}{BLANK * pad}{right}" if age else f"{glyph} {text}"
 
@@ -519,12 +740,16 @@ def transcript_mtime(cwd, title, cache):
     slug = re.sub(r"[^A-Za-z0-9]", "-", cwd)
     files = []
     for root in glob.glob(os.path.expanduser("~/.claude*/projects")):
-        files += glob.glob(os.path.join(root, slug, "*.jsonl"))
-    files.sort(key=lambda p: -os.path.getmtime(p))
+        for p in glob.glob(os.path.join(root, slug, "*.jsonl")):
+            try:
+                files.append((os.path.getmtime(p), p))
+            except OSError:
+                pass  # removed between the glob and the stat
+    files.sort(reverse=True)
     best = None
-    for p in files[:25]:
+    for mtime, p in files[:25]:
         if file_contains(p, title):
-            best = os.path.getmtime(p)
+            best = mtime
             break
     cache[key] = best
     return best
@@ -616,7 +841,11 @@ def reason_text(text, limit=60):
 
 
 # ---------------- compute ----------------
+LOOKUPS_PER_TICK = 3  # transcript lookups (each may read several large files) per tick; the rest wait
+
+
 def compute(opt, memo):
+    memo["wake_at"] = None  # recomputed below; a tick that fails part-way must not leave an old one behind
     agents = call("agent.list")["agents"]
     memo["live"] = {a["pane_id"]: set((a.get("tokens") or {}).keys()) for a in agents}
     spaces = {w["workspace_id"]: w for w in call("workspace.list")["workspaces"]}
@@ -627,6 +856,10 @@ def compute(opt, memo):
     except Exception:
         tabs = {}
     now = time.time()
+    # a state change first seen after a gap (the daemon was stopped or down) happened at some unknown point in it
+    gap = now - (memo.get("tick_at") or now) > max(30, 2 * int(opt["tick_seconds"]) + 5)
+    memo["tick_at"] = now
+    lookups = LOOKUPS_PER_TICK
     stale_after = seconds(opt["stale_after"])
     seen = memo.setdefault("since", {})
     tcache = memo.setdefault("tcache", {})
@@ -639,18 +872,22 @@ def compute(opt, memo):
             st = "idle"  # the agent you have selected has been finished long enough: it counts as viewed
         rec = seen.get(pid)
         if not rec or rec["seq"] != seq:
-            first = rec is None
-            start = now
-            if first:  # already in this state when we first saw it: the start is unknown ...
-                start = None
-                if opt["age_source"] == "claude-transcripts":  # ... unless the user lets us look it up (opt-in)
-                    start = transcript_mtime(a.get("cwd"), a.get("terminal_title_stripped"), tcache) or None
-            rec = seen[pid] = {"seq": seq, "since": start, "st": st}
+            # already in this state when we first saw it, or changed while we were away: the start is unknown ...
+            rec = seen[pid] = {"seq": seq, "since": None if rec is None or gap else now, "st": st,
+                               "lookup": rec is None or gap}
         elif rec.get("st") not in (None, st):
             # the visible state changed without herdr counting a state change: a finished agent was viewed
             # (done -> idle). The timer restarts, so "idle" and "asleep" count from when you viewed it.
             rec["since"] = now
         rec["st"] = st
+        if rec.get("lookup"):
+            # ... unless the user lets us look it up (opt-in; Claude Code agents only, a few per tick)
+            if opt["age_source"] != "claude-transcripts" or (a.get("agent") or "") != "claude":
+                rec.pop("lookup")
+            elif lookups > 0:
+                lookups -= 1
+                rec.pop("lookup")
+                rec["since"] = transcript_mtime(a.get("cwd"), a.get("terminal_title_stripped"), tcache) or None
         age = None if rec["since"] is None else max(0, int(now - rec["since"]))
         stale = st == "idle" and age is not None and age >= stale_after
         ws = spaces.get(a["workspace_id"], {})
@@ -678,8 +915,7 @@ def compute(opt, memo):
         memo["manual"] = [w for w in memo["manual"] if w in spaces]
 
     width = sidebar_width()
-    pins = load_pins()
-    pins["agents"] = [x for x in pins["agents"] if x in {r["pid"] for r in rows}]
+    pins = prune_pins(load_pins(), {r["pid"] for r in rows}, set(spaces), memo, now)
     kinds = {r["kind"] for r in rows}
     show_kind = opt["show_kind"] == "always" or (opt["show_kind"] == "auto" and len(kinds) > 1)
     mode = opt["group_by"] if opt["group_by"] in ("kind", "project") else "none"
@@ -700,14 +936,18 @@ def compute(opt, memo):
     gorder = sorted(best, key=lambda g: (best[g], str(g)))
     gidx = {g: i + 1 for i, g in enumerate(gorder)}
     order = sorted(rows, key=lambda r: ((gidx[r["g"]] if group else 0), r["key"]))
+    # the first and last rows of each group, among the rows the view shows (a filtered view hides some)
+    here = next((w for w, ws in spaces.items() if ws.get("focused")), None)
+    shown = [r for r in order if opt["view"] == "triage" or r["st"] in ("blocked", "done")
+             or (opt["view"] == "here+" and r["wsid"] == here)]
     firsts, lasts = set(), set()
     if group:
         prev = None
-        for i, r in enumerate(order):
+        for i, r in enumerate(shown):
             if r["g"] != prev:
                 firsts.add(r["pid"])
                 if i:
-                    lasts.add(order[i - 1]["pid"])
+                    lasts.add(shown[i - 1]["pid"])
             prev = r["g"]
     # disambiguation
     dup = {}
@@ -743,7 +983,7 @@ def compute(opt, memo):
             # show_kind = always puts the kind on every row whatever the grouping
             if opt["show_kind"] == "always" or (show_kind and mode != "kind") or (mode == "kind" and r["pid"] in firsts and len(kinds) > 1):
                 parts.append(r["kind"])
-        body = " · ".join(parts) + (" ★" if r["pinned"] else "")
+        body = " · ".join(parts)
         icon, where = ICON.get(r["kind"], ICON_OTHER), opt["kind_icon"]
         if where == "inline":
             # [status] [kind] [label]: inside $head, so it takes the row's state colour
@@ -755,11 +995,12 @@ def compute(opt, memo):
             # rows dim it like the rest (two) — see the layouts' rules
             quiet = 2 if r["stale"] else 1 if r["st"] == "unknown" else 0
             t["icon" if where == "left" else "icon_r"] = ZW * quiet + icon
-        t["head"] = pinned_row(glyph, body, fmt_age(r["age"]), width - (4 if where in ("left", "right") else 0))
+        t["head"] = pinned_row(glyph, body, fmt_age(r["age"]), width - (4 if where in ("left", "right") else 0),
+                               " ★" if r["pinned"] else "")
         if r["pinned"]:
             t["pin"] = "0"
         if mode == "kind" and r["pid"] in lasts and len(kinds) > 1:
-            t["rule"] = "─" * 26
+            t["rule"] = "─" * max(1, min(width - 3, TOKEN_MAX))
         if opt["show_task"] != "never" and r["st"] == "blocked":
             t["wait"] = clip("↳ " + wait_reason(r["pid"]))
         if opt["show_task"] in ("attention", "all") and r["st"] == "done" and opt["label"] == "space":
@@ -784,7 +1025,6 @@ def compute(opt, memo):
                 wout.setdefault(p["workspace_id"], {})["alert"] = f"!{n}"
     if now - memo.get("dirty_at", 0) > 30:
         memo["dirty_at"] = now
-        memo["dirty"] = {}
         cwd_of = {}
         try:
             panes = call("pane.list")
@@ -793,29 +1033,68 @@ def compute(opt, memo):
             panes = agents
         for pn in panes:
             cwd_of.setdefault(pn["workspace_id"], pn.get("cwd"))
+        by_cwd = {}
         for w in spaces.values():
             cwd = (w.get("worktree") or {}).get("checkout_path") or cwd_of.get(w["workspace_id"])
-            if not cwd:
-                continue
-            try:
-                # a repo's own config must not run commands here (core.fsmonitor executes on status),
-                # and a background status must never take index.lock from under the user's git
-                r = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", cwd,
-                                    "status", "--porcelain", "--untracked-files=no"],
-                                   capture_output=True, encoding="utf-8", errors="replace", timeout=2, **NOWIN)
-                if r.returncode == 0 and r.stdout.strip():
-                    memo["dirty"][w["workspace_id"]] = True
-            except Exception:
-                pass
+            if cwd:
+                by_cwd.setdefault(cwd, []).append(w["workspace_id"])
+        old, dirty = memo.get("dirty") or {}, {}
+        if by_cwd:
+            deadline = time.time() + 2  # one budget for all repos: a slow one keeps its last mark instead of stalling the tick
+            with ThreadPoolExecutor(max_workers=min(8, len(by_cwd))) as pool:
+                for cwd, d in zip(by_cwd, pool.map(lambda c: git_dirty(c, deadline), by_cwd)):
+                    for wid in by_cwd[cwd]:
+                        if d is None and old.get(wid):
+                            dirty[wid] = True  # git too slow or failed this time: keep what we knew
+                        elif d:
+                            dirty[wid] = True
+        memo["dirty"] = dirty
     for wid in memo.get("dirty", {}):
-        wout.setdefault(wid, {})["dirty"] = "±"
+        if wid in spaces:
+            wout.setdefault(wid, {})["dirty"] = "±"
     for wid in pins["spaces"]:
         if wid in spaces:
             wout.setdefault(wid, {})["spin"] = "★"
     memo["space_plan"] = plan_spaces(opt, spaces, rows, pins, memo, now)
+    memo["space_ids"] = list(spaces)
 
     view = view_params(opt, mode, len(rows), width)
     return out, wout, view
+
+
+GIT_FILTER = re.compile(r"^filter\.(.+)\.(clean|smudge|process)$")
+
+
+def git_dirty(cwd, deadline=None):
+    """Does the checkout at `cwd` have uncommitted changes to tracked files? None when git fails or is slow.
+    A repo's own config must not run commands here: core.fsmonitor and filter drivers (clean / process, which
+    git status runs on a touched file) are switched off, and submodules are not entered. A background
+    status must never take index.lock from under the user's git (--no-optional-locks). Files that have a filter
+    attribute are left out of the check (without their filter, git would see every touched one as changed).
+    Both git calls share one deadline (2 s from the call by default)."""
+    deadline = deadline or time.time() + 2
+    left = lambda: max(0.05, deadline - time.time())
+    try:
+        base = ["git", "--no-optional-locks", "-c", "core.fsmonitor=false"]
+        names = subprocess.run(base + ["-C", cwd, "config", "--name-only", "--get-regexp", r"^filter\..*\.(clean|smudge|process)$"],
+                               capture_output=True, encoding="utf-8", errors="replace", timeout=left(), **NOWIN).stdout
+        drivers = sorted({m.group(1) for m in map(GIT_FILTER.match, names.splitlines()) if m})
+        if any("=" in d for d in drivers):
+            return None  # `-c` splits at the first "=", so such a driver can't be switched off: don't run status
+        for name in drivers:
+            base += ["-c", f"filter.{name}.clean=", "-c", f"filter.{name}.smudge=", "-c", f"filter.{name}.process=",
+                     "-c", f"filter.{name}.required=false"]
+        # the whole repo (":/", not just the pane's subdirectory), minus files that use one of those drivers
+        # (git refuses some characters in that pathspec; a driver named with them is switched off but not left out)
+        spec = ["--", ":/"] + [f":(top,exclude,attr:filter={d})" for d in drivers if re.fullmatch(r"[A-Za-z0-9_ -]+", d)] \
+            if drivers else []
+        r = subprocess.run(base + ["-C", cwd, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=all"] + spec,
+                           capture_output=True, encoding="utf-8", errors="replace", timeout=left(), **NOWIN)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    return bool(r.stdout.strip())
 
 
 def plan_spaces(opt, spaces, rows, pins, memo, now):
@@ -858,7 +1137,11 @@ def plan_spaces(opt, spaces, rows, pins, memo, now):
             w = parent.get(r["wsid"], r["wsid"])
             tier[w] = max(tier.get(w, -1), PRIO[r["st"]])
         base = sorted(base, key=lambda w: -tier.get(w, -1))       # stable: manual order breaks ties
-    pinned = [w for w in pins["spaces"] if w in top]
+    pinned = []
+    for w in pins["spaces"]:  # a pinned worktree space leads by its parent (children always follow their parent)
+        w = parent.get(w, w)
+        if w in top and w not in pinned:
+            pinned.append(w)
     base = pinned + [w for w in base if w not in pinned]
     want = []
     for w in base:
@@ -899,10 +1182,10 @@ def view_params(opt, mode, count=None, width=None):
             p["label"] = n + BLANK * room + p["label"]
         else:
             view = p["label"]
-            while view and cells(n) + 1 + cells(view) > fit - (0 if view == p["label"] else 1):
+            while view and cells(n) + 3 + cells(view) > fit - (0 if view == p["label"] else 1):
                 view = view[:-1]
             view = view.rstrip(" ·")
-            p["label"] = n + (" " + view + ("" if view == p["label"] else "…") if view else "")
+            p["label"] = n + (" · " + view + ("" if view == p["label"] else "…") if view else "")
     return p
 
 
@@ -951,11 +1234,19 @@ def apply(out, wout, view, memo):
         log_once("seq-off", "herdr is ignoring sequenced reports; sending them unsequenced from now on")
     if memo.pop("resync", False) or lost:
         log("resync: pushing every token and the view again")
-        for k in ("pushed", "wpushed", "view"):
+        for k in ("pushed", "wpushed", "view", "winit"):
             memo.pop(k, None)
     last = memo.setdefault("pushed", {})
+    live = memo.get("live") or {}
     for pid, t in out.items():
-        prev = last.get(pid, {})
+        if pid not in last:
+            # first push from this daemon (a start, reload or resync): tokens an earlier daemon left that the
+            # new set lacks (an unpinned pin, an answered wait) would otherwise stay forever
+            stray = [k for k in TOKENS if k in live.get(pid, ()) and k not in t]
+            report("pane", pid, t, stray)
+            last[pid] = t
+            continue
+        prev = last[pid]
         if prev != t:
             changed = {k: v for k, v in t.items() if prev.get(k) != v}
             gone = [k for k in prev if k not in t]
@@ -969,6 +1260,15 @@ def apply(out, wout, view, memo):
                 report("pane", pid, {}, list(last[pid]))
             last.pop(pid)
     wl = memo.setdefault("wpushed", {})
+    winit = memo.setdefault("winit", set())
+    for wid in memo.get("space_ids") or []:
+        if wid not in winit:
+            # same for spaces: clear what an earlier daemon may have left, once per space
+            winit.add(wid)
+            t = wout.get(wid, {})
+            report("workspace", wid, t, [k for k in WTOKENS if k not in t])
+            if t:
+                wl[wid] = t
     for wid in set(wout) | set(wl):
         t, prev = wout.get(wid, {}), wl.get(wid, {})
         if t != prev:
@@ -1038,15 +1338,16 @@ def alive():
     return None
 
 
-def take_lock():
+def take_lock(path=None, tries=20):
     """Become this session's one daemon, or return None if another process already is.
     Retries briefly so a concurrent alive() probe (a momentary shared lock) cannot make us give up."""
-    os.makedirs(RUN_DIR, exist_ok=True)
-    fd = os.open(LOCK, os.O_RDWR | os.O_CREAT, 0o644)
-    for _ in range(20):
+    private_dir(RUN_DIR)
+    fd = os.open(path or LOCK, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
+    for i in range(tries):
         if _try_lock(fd, exclusive=True):
             return fd
-        time.sleep(0.05)
+        if i + 1 < tries:
+            time.sleep(0.05)
     os.close(fd)
     return None
 
@@ -1069,7 +1370,7 @@ def retire_legacy():
     except OSError:
         pass
     if os.path.exists(LEGACY_MEMO) and not os.path.exists(MEMO):
-        os.makedirs(RUN_DIR, exist_ok=True)
+        private_dir(RUN_DIR)
         os.replace(LEGACY_MEMO, MEMO)
 
 
@@ -1082,8 +1383,8 @@ def plugin_enabled():
 
 
 def server_unreachable(e):
-    return isinstance(e, (FileNotFoundError, ConnectionRefusedError)) or \
-        (isinstance(e, OSError) and e.errno in (errno.ENOENT, errno.ECONNREFUSED))
+    """Only the socket itself counts: a missing herdr binary or a vanished file is an ordinary error."""
+    return isinstance(e, ServerGone)
 
 
 def code_stamp():
@@ -1096,14 +1397,52 @@ def code_stamp():
         return None
 
 
+def stopped():
+    """The user stopped the daemon (stop action, or s in the popup): hooks must not start it again.
+    Only start (the action or the popup) and a herdr start or restart ([[startup]]) clear it."""
+    return os.path.exists(STOPPED)
+
+
+def set_stopped(on):
+    try:
+        if on:
+            private_dir(RUN_DIR)
+            write_atomic(STOPPED, "")
+        else:
+            os.remove(STOPPED)
+    except OSError:
+        pass
+
+
 def run():
+    memo = {}
+    woke = {"flag": False, "stop": False}
+    wakeup = None
+    if not WIN:
+        # handlers before the lock and the pidfile: a hook that signals the moment the pidfile appears must
+        # not kill us with SIGUSR1's default action. The wakeup pipe ends the wait between ticks at once.
+        signal.signal(signal.SIGUSR1, lambda *_: woke.update(flag=True))
+        signal.signal(signal.SIGUSR2, lambda *_: (memo.update(resync=True), woke.update(flag=True)))
+        r, w = os.pipe()
+        os.set_blocking(r, False)
+        os.set_blocking(w, False)
+        signal.set_wakeup_fd(w)
+        wakeup = r
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     lock = take_lock()
     if lock is None:
         return  # another daemon already serves this session
+    if stopped():
+        os.close(lock)
+        return  # stopped while we were starting (a hook racing the stop action)
+    DAEMON["on"] = True
+    try:
+        os.chmod(RUN_DIR, 0o700)  # created world-readable by versions before 0.6
+    except OSError:
+        pass
     stamp = code_stamp()
     reload_code = False
     write_atomic(PIDFILE, str(os.getpid()))
-    memo = {}
     old = read_json(MEMO, {})
     if isinstance(old, dict):
         memo["since"], memo["tcache"] = old.get("since") or {}, old.get("tcache") or {}
@@ -1111,17 +1450,13 @@ def run():
         if old.get("manual"):
             memo["manual"] = old["manual"]
         memo["last_sort"] = old.get("last_sort")
+        memo["tick_at"] = old.get("tick_at")
         SEQ["last"] = int(old.get("seq") or 0)
-    woke = {"flag": False, "stop": False}
     if WIN:
         try:
             os.remove(WAKE)  # requests addressed to an earlier daemon are stale
         except OSError:
             pass
-    else:
-        signal.signal(signal.SIGUSR1, lambda *_: woke.update(flag=True))
-        signal.signal(signal.SIGUSR2, lambda *_: (memo.update(resync=True), woke.update(flag=True)))
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     log("started", os.getpid(), "socket", SOCK)
     down_since = None
     last_tick = 0.0
@@ -1138,11 +1473,12 @@ def run():
                     return
                 opt = options()
                 apply(*compute(opt, memo), memo)
-                keep = {k: memo.get(k) for k in ("since", "tcache", "focus", "manual", "last_sort")}
+                keep = {k: memo.get(k) for k in ("since", "tcache", "focus", "manual", "last_sort", "tick_at")}
                 write_atomic(MEMO, json.dumps(dict(keep, seq=SEQ["last"])))
                 last_tick = time.time()
                 down_since = None
             except Exception as e:
+                memo["wake_at"] = None  # never wait on a deadline from before the failure (it would spin)
                 if server_unreachable(e):
                     down_since = down_since or time.time()
                     if time.time() - down_since >= GONE_AFTER:
@@ -1152,19 +1488,20 @@ def run():
                 else:
                     log("error", repr(e))
                     memo.pop("view", None)
-            tick = options()["tick_seconds"]
-            for _ in range(tick * 10):
-                if WIN:
-                    take_wake(woke, memo)
-                    if woke["stop"]:
-                        log("stop requested")
-                        return
-                if woke["flag"] and time.time() - last_tick >= MIN_GAP:
-                    break  # a hook woke us; bursts (focus changes) coalesce into one recompute
-                if memo.get("wake_at") and time.time() >= memo["wake_at"]:
-                    break  # a selected, finished agent is due to be marked viewed
-                time.sleep(0.1)
+            try:
+                tick = int(options()["tick_seconds"])
+            except Exception:
+                tick = DEFAULTS["tick_seconds"]
+            wait(woke, memo, wakeup, time.time() + tick, last_tick)
+            if woke["stop"]:
+                log("stop requested")
+                return
             woke["flag"] = False
+    except SystemExit:
+        raise
+    except BaseException:
+        log("crashed:", traceback.format_exc())
+        raise
     finally:
         try:
             if int(read_text(PIDFILE, "")) == os.getpid():
@@ -1172,8 +1509,49 @@ def run():
         except (OSError, ValueError):
             pass
         os.close(lock)  # releases the lock; the lock file itself stays (unlinking it would race a new daemon)
-        if reload_code:  # same process id, same env, fresh code; the new code takes the lock again
-            os.execv(sys.executable, [sys.executable, os.path.abspath(__file__), "run"])
+        if reload_code:
+            relaunch()
+
+
+def wait(woke, memo, wakeup, deadline, last_tick):
+    """Sleep until the next tick, a hook's wake (bursts coalesce: at most one recompute per MIN_GAP), or the
+    moment a selected, finished agent is due to be marked viewed. Unix sleeps in select() on the signal
+    wakeup pipe; Windows polls its wake file every 0.1 s."""
+    while True:
+        if WIN:
+            take_wake(woke, memo)
+            if woke["stop"]:
+                return
+        now = time.time()
+        if woke["flag"] and now - last_tick >= MIN_GAP:
+            return
+        due = memo.get("wake_at")
+        if (due and now >= due) or now >= deadline:
+            return
+        if WIN or wakeup is None:
+            time.sleep(0.1)
+            continue
+        t = deadline - now
+        if due:
+            t = min(t, due - now)
+        if woke["flag"]:
+            t = min(t, MIN_GAP - (now - last_tick))
+        try:
+            select.select([wakeup], [], [], max(0.01, t))
+            while os.read(wakeup, 512):
+                pass
+        except (BlockingIOError, InterruptedError):
+            pass
+
+
+def relaunch():
+    """Run the updated code: the lock is already released and the new process takes it again. Unix replaces
+    this process (same pid, same env). Windows' execv would start an attached console window and mangle paths
+    with spaces, so there the daemon starts its successor the way spawn() does and exits."""
+    if WIN:
+        launch()
+        return
+    os.execv(sys.executable, [sys.executable, os.path.abspath(__file__), "run"])
 
 
 def take_wake(woke, memo):
@@ -1196,27 +1574,49 @@ def take_wake(woke, memo):
         woke["stop"] = True
 
 
-def spawn():
-    """Start this session's daemon unless it runs; safe to call from many hooks at once."""
-    if alive():
-        return alive()
-    retire_legacy()
-    os.makedirs(RUN_DIR, exist_ok=True)
+def launch():
+    """Start a daemon process, detached from the caller, its output going to covrd.log."""
     argv = [sys.executable, os.path.abspath(__file__), "run"]
-    with open(LOG, "a") as out:  # the child keeps its own copy of the handle
+    out = open_log()
+    try:
         if WIN:
             # detached, no console, own process group; break away from the hook's job object when herdr allows
             # it, so the daemon outlives the hook that started it
             base = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+            # no log handle for its whole life: Windows can't rename a file someone holds open, so covrd.log could
+            # never rotate (run() logs a crash's traceback itself)
             for flags in (base | 0x01000000, base):  # | CREATE_BREAKAWAY_FROM_JOB
                 try:
-                    subprocess.Popen(argv, creationflags=flags, stdin=subprocess.DEVNULL, stdout=out,
-                                     stderr=subprocess.STDOUT, env=os.environ.copy())
+                    subprocess.Popen(argv, creationflags=flags, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, env=os.environ.copy())
                     break
                 except OSError:
                     continue
         else:
-            subprocess.Popen(argv, start_new_session=True, stdout=out, stderr=subprocess.STDOUT, env=os.environ.copy())
+            subprocess.Popen(argv, start_new_session=True, stdin=subprocess.DEVNULL, stdout=out,
+                             stderr=subprocess.STDOUT, env=os.environ.copy())
+    finally:
+        os.close(out)  # the child keeps its own copy of the handle
+
+
+def spawn():
+    """Start this session's daemon unless it runs; safe to call from many hooks at once (only the hook that
+    takes the spawn lock starts one, the others wait for it)."""
+    set_stopped(False)
+    if alive():
+        return alive()
+    gate = take_lock(SPAWN_LOCK, tries=1)
+    if gate is not None:
+        try:
+            if not lock_held():
+                retire_legacy()
+                launch()
+            for _ in range(30):
+                if alive():
+                    break
+                time.sleep(0.1)
+        finally:
+            os.close(gate)
     for _ in range(30):
         if alive():
             break
@@ -1242,6 +1642,7 @@ def signal_daemon(kind="wake"):
 
 
 def stop():
+    set_stopped(True)  # first: a hook firing now must not start a new daemon
     p = signal_daemon("stop")
     for _ in range(50):  # wait for it to exit before clearing, so a last tick cannot re-push
         if not lock_held():
@@ -1280,7 +1681,7 @@ def clear_all():
         for a in call("agent.list")["agents"]:
             report("pane", a["pane_id"], {}, TOKENS)
         for w in call("workspace.list")["workspaces"]:
-            report("workspace", w["workspace_id"], {}, ["alert", "dirty", "spin"])
+            report("workspace", w["workspace_id"], {}, WTOKENS)
         call("agent.view.clear", {"source": f"plugin:{PID}"})
     except Exception as e:
         log("clear error", repr(e))
@@ -1293,13 +1694,14 @@ def main():
     elif cmd == "startup":
         # [[startup]] also runs after a server restart / live handoff: a surviving daemon must re-push
         # everything (the new server has none of our tokens and no view), a missing one is started
+        set_stopped(False)
         if not signal_daemon("resync"):
             spawn()
         print("running", alive())
     elif cmd == "spawn":
         print("running", spawn())
     elif cmd == "poke":
-        if not signal_daemon():
+        if not signal_daemon() and not stopped():
             spawn()
     elif cmd == "stop":
         stop()
@@ -1307,9 +1709,17 @@ def main():
     elif cmd == "settings":
         sys.exit(open_settings())
     elif cmd == "pin":
-        target, on = toggle_pin(sys.argv[2])
+        kind = sys.argv[2] if len(sys.argv) > 2 else ""
+        if kind not in ("agents", "spaces"):
+            sys.exit("usage: covrd.py pin agents|spaces")
+        target, on = toggle_pin(kind)
         signal_daemon()
-        notify(f"{'pinned' if on else 'unpinned'} {target}" if target else "nothing focused")
+        if not target:
+            notify("nothing focused")
+        elif on is None:
+            notify(f"{target} is not an agent: nothing pinned")
+        else:
+            notify(f"{'pinned' if on else 'unpinned'} {target}")
         print(target, on)
     elif cmd == "set":
         key = sys.argv[2] if len(sys.argv) > 2 else ""

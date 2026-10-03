@@ -44,7 +44,7 @@ herdr plugin action invoke covr.sidebar.install-layout
 ```
 
 `install-layout` adds one marked block to herdr's `config.toml` and reloads it:
-- **Colours** follow your `[theme] name`: latte colours for light themes, mocha for the rest. Set `layout` to `light` or `dark` to override.
+- **Colours** follow your `[theme] name`: latte colours for light themes (`kanagawa-lotus`, `rose-pine-dawn` and the other light ones), mocha for the rest. Set `layout` to `light` or `dark` to override.
 - **Conflicts:** if you already define `[ui.sidebar.spaces]` or `[ui.sidebar.agents]`, it writes nothing and says why.
 - **Undo:** `uninstall-layout` removes the block, byte for byte.
 - **Upgrades:** run `install-layout` again after updating covr, so the block's colours match the current glyphs and icons.
@@ -67,7 +67,7 @@ description = "covr: settings"
 
 Options are grouped into Sidebar, Rows and Timing. ↑/↓ picks an option and ←/→ changes it; the sidebar updates straight away. `s` starts or stops the daemon.
 
-Every option is also an action you can bind: `cycle-view`, `toggle-group`, `cycle-kind`, `toggle-label`, `cycle-space-sort`, `pin-agent`, `pin-space`, `start`, `stop`, `install-layout`, `uninstall-layout`. `herdr plugin action list --plugin covr.sidebar` lists them.
+Actions you can bind to keys: `cycle-view`, `toggle-group`, `cycle-kind`, `toggle-label` and `cycle-space-sort` step through those options; `pin-agent`, `pin-space`, `start`, `stop`, `install-layout` and `uninstall-layout` do what they say. `herdr plugin action list --plugin covr.sidebar` lists them.
 
 ## Grouping and sorting
 

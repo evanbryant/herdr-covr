@@ -1,6 +1,6 @@
 # covr: design and behaviour
 
-This is how covr (plugin id `covr.sidebar`, version 0.5.2) draws herdr's sidebar and how its daemon behaves. The README covers installation and a quick tour.
+This is how covr (plugin id `covr.sidebar`, version 0.6.0) draws herdr's sidebar and how its daemon behaves. The README covers installation and a quick tour.
 
 ## Agents
 
@@ -21,7 +21,7 @@ agents [9]               triage   header: every open agent, then the view
 - **One token:** the first line is a single token, `$head`, holding the glyph, the label, any extra parts and the age.
 - **Right-aligned age:** herdr has no alignment, so the daemon pads the line with U+2800 (a blank that herdr does not trim) to the sidebar's current width.
 - **One colour per line:** herdr styles a whole token at once, so the whole line takes its state's colour.
-- **Truncation:** long labels are cut at a word boundary with `…`. The space name is shortened before the tab name, and the age is never cut. No token exceeds herdr's 80-character limit.
+- **Truncation:** long labels are cut at a word boundary with `…`. The space name is shortened before the tab name, and the age and a pin's `★` are never cut. No token exceeds herdr's 80-character limit.
 - **Tabs:** tab names show only for tabs you renamed (`show_tab = named`); auto-numbered tabs are hidden.
 - **Look-alike rows:** when two agents in one space and tab would render the same, each gets one or two words of its task (`web · Docs refresh` / `web · Login bug`).
 - **Kind icon:** one mark per agent kind; `kind_icon` places it. Terminals draw a character their font lacks from a fallback font, often wider or higher than a cell: Hack (Warp's default) lacks `✻ ✦ ✧ ☿` and the `✓` state glyph, which is why they can look offset there. DejaVu Sans Mono has every glyph covr uses. Claude's `✻` and Gemini's `✦` are the brands' own marks; the others are plain shapes: codex `◈`, grok `⊘`, cursor `◆`, copilot `◉`, opencode `◫`, amp `▲`, droid `▤`, pi `π`, omp `∏`, qwen `✧`, kimi `◍`, cline `◘`, devin `◇`, hermes `☿`, letta `λ`, kilo `▣`, qodercli `◪`, agy `◢`, kiro `▽`, mastracode `►`, anything else `▫`. None reuses a state glyph. herdr colours a whole token at once and puts an unconfigurable ` · ` between tokens, so the placement trades colour against room:
@@ -58,7 +58,7 @@ The agents list uses one herdr Agent view.
 - **Stable ranking:** an agent's rank is set by the moment it entered its current state, so rows move only when a state changes, never as ages tick.
 - **Viewed restarts the timer:** herdr reports a finished agent as `done` until it is viewed, then as `idle`, without counting that as a state change. covr restarts the agent's timer at that moment, however it was viewed, so the idle age and the `stale_after` countdown run from the view, not from the finish.
 - **Selected and finished:** herdr's server marks an agent viewed only on an explicit focus. An agent that finishes while it is already the selected pane (for example with the terminal in the background) can therefore stay `done`. After `seen_after` (default 5 s), covr focuses it where it is, which marks it viewed and moves nothing. The daemon wakes at the due time, not at its next tick.
-- **Age source:** the age is time in the current state, as the daemon observes it; it remembers start times across restarts. An agent already in its state when the daemon first sees it has no age until its state changes. With `age_source = claude-transcripts` (opt-in), that start time is taken from the newest Claude Code transcript that mentions the session title.
+- **Age source:** the age is time in the current state, as the daemon observes it; it remembers start times across restarts. An agent already in its state when the daemon first sees it has no age until its state changes, and so has one that changed while the daemon was stopped or down (the moment it changed is unknown). With `age_source = claude-transcripts` (opt-in), the start time of a Claude Code agent is taken from the newest transcript that mentions the session title; a few agents are looked up per tick, so a large session fills in over a few seconds.
 
 ### Grouping
 
@@ -89,7 +89,7 @@ In both modes the daemon gives each agent a group number, `grp`, and the view so
 
 - **Row:** herdr's own space row, plus three markers:
   - `!N` (red) on a repo whose worktree spaces hold N blocked agents. herdr's own rollup ignores worktrees.
-  - `±` (peach) when `git status` finds uncommitted changes. This is checked every 30 s, with the repo's `core.fsmonitor` disabled and without taking git's index lock.
+  - `±` (peach) when `git status` finds uncommitted changes. This is checked every 30 s, for all repos at once, without taking git's index lock. A repo's own config can't run commands here: `core.fsmonitor` and filter drivers (`filter.*.clean` / `process`, git-lfs among them) are switched off and submodules aren't entered. Files that use one of those filter drivers are left out of the check (the rest of the repo still counts, whichever subdirectory the pane is in; a driver whose name git can't put in a pathspec, such as `a.b`, is switched off but its files still count), and a repo whose filter driver name contains `=` (which can't be switched off safely) is not checked. All repos share a 2 s budget per check; one that fails or runs out keeps its last mark.
   - `★` for a pinned space.
 - **Sorting** (`space_sort`). herdr has no sort setting for spaces, so the daemon moves them with `workspace.move_block`:
 
@@ -107,13 +107,14 @@ In both modes the daemon gives each agent a group number, `grp`, and the view so
 
 ## Pinning
 
-`pin-agent` pins the focused agent and `pin-space` pins the current space. Pinned items lead their list, or their group when grouped. Pins are stored in the plugin's state directory and shared by all herdr sessions. Pins for closed panes are dropped.
+`pin-agent` pins the focused agent and `pin-space` pins the current space. Pinned items lead their list, or their group when grouped. Pins belong to their herdr session (pane and space ids only mean something there) and are stored with its state. Pins made before 0.6, when one file served every session, are kept by the default session; named sessions start without pins. Pins for agents and spaces that have been gone for a minute are dropped. Pinning a pane that is not an agent does nothing, and says so. Pinning a worktree space marks it and moves its repo's space to the top.
 
 ## Options
 
 Options are stored in `$(herdr plugin config-dir covr.sidebar)/config.toml`. The settings popup and actions write this file, and the daemon reads it every tick.
 - **Invalid values:** `set` refuses them. In a hand-edited file they are ignored, with one log line and one notification each.
-- **Old Pythons:** before Python 3.11 (no `tomllib`), the file is read by a small built-in parser.
+- **Edits keep your file:** a change from the popup or an action rewrites only that option's line (keeping its comment), so comments, the other lines and the file's line endings stay. A file that is not valid TOML is never overwritten: the change is refused with a notification until the file is fixed (until then the sidebar uses the defaults). A UTF-8 byte-order mark is accepted.
+- **Old Pythons:** before Python 3.11 (no `tomllib`), the file is read by a small built-in parser. It skips a line it can't read instead of rejecting the file, so there a change is written even when another line is broken (only the changed option's line is touched).
 
 Rows are grouped by the settings popup's sections; the last two options are file-only.
 
@@ -137,9 +138,9 @@ Rows are grouped by the settings popup's sections; the last two options are file
 ## Actions
 
 `settings` opens the popup. The others:
-- `cycle-view`, `toggle-group`, `cycle-kind`, `toggle-label` and `cycle-space-sort` step through an option.
+- `cycle-view`, `toggle-group`, `cycle-kind`, `toggle-label` and `cycle-space-sort` step through an option. From the command line, `covrd.py set <option> cycle` also flips the on/off options; options that take a value (durations, `tick_seconds`) need one.
 - `pin-agent` and `pin-space` pin and unpin.
-- `start` and `stop` control the daemon.
+- `start` and `stop` control the daemon. After `stop` (or `s` in the popup), hooks no longer start it; only `start` or a herdr start or restart does.
 - `install-layout` and `uninstall-layout` manage the layout block.
 
 Bind any of them in herdr's `config.toml` as `type = "plugin_action"`, `command = "covr.sidebar.<action>"`.
@@ -148,21 +149,23 @@ Bind any of them in herdr's `config.toml` as `type = "plugin_action"`, `command 
 
 `bin/covrd.py` is a Python standard-library daemon, one per herdr session, keyed by the session's socket.
 
-- **Updates:** on every tick (5 s), and immediately when a hook fires. The hooks are agent status and detection, pane focus and close, workspace create, close, rename, focus and reorder, tab rename, and worktree open. Bursts are merged into at most one update per 0.5 s, and a hook costs about 15 ms (`bin/poke.py`).
-- **Diffing:** it reads `agent.list`, `workspace.list` and `tab.list`, and sends only changed tokens (`report-metadata --source covr --seq …`).
+- **Updates:** on every tick (5 s), and immediately when a hook fires. The hooks are agent status and detection, pane focus and close, workspace create, close, rename, focus and reorder, tab rename, and worktree open. Bursts are merged into at most one update per 0.5 s, and a hook costs about 15 ms (`bin/poke.py`). Between ticks the daemon sleeps until the next tick, a hook or a due time; it does not poll (on Windows it checks its wake file every 0.1 s).
+- **Diffing:** it reads `agent.list`, `workspace.list` and `tab.list`, and sends only changed tokens over the socket (`pane.report_metadata` / `workspace.report_metadata`, source `covr`), falling back to the `herdr … report-metadata` CLI on a server that lacks those methods. Tokens an earlier daemon left behind are cleared on the first push.
 - **Sequencing:** reports carry a strictly increasing `--seq`, so a late write can't undo `stop`. If herdr keeps rejecting the numbers, the daemon switches to plain reports.
 - **Recovery:** when herdr stops showing its tokens (a restart or live handoff), it sends all of them and the view again. The `[[startup]]` hook triggers the same resync.
-- **Exit:** it exits after 60 s without herdr, and it clears its tokens and exits when the plugin is disabled or unlinked.
-- **One daemon per session:** a lock held for the daemon's lifetime keeps concurrent starts safe.
-- **Code updates:** it restarts itself when its code changes on disk.
+- **Exit:** it exits after 60 s without herdr (a socket that is missing, refuses connections or doesn't answer within 5 s), and it clears its tokens and exits when the plugin is disabled or unlinked. Other errors are logged and retried on the next tick, and a crash's traceback goes to the log.
+- **One daemon per session:** a lock held for the daemon's lifetime keeps concurrent starts safe, and a spawn lock makes a burst of hooks start only one process.
+- **Code updates:** it restarts itself when its code changes on disk (on Windows by starting a detached successor, never a console window).
 - **Sidebar width:** read from this session's herdr client preferences (the width you dragged to), else `ui.sidebar_width`, else 26.
-- **State:** stored under the plugin's state directory, in `s/<session hash>/`. New files are readable only by you. Cached transcript lookups are stored as hashes and pruned to live panes, and the log rotates at 256 KB.
+- **State:** stored under the plugin's state directory, in `s/<session hash>/`. Its directories, log, lock and files are readable only by you. Cached transcript lookups are stored as hashes and pruned to live panes, and the log rotates at 256 KB (on Windows the daemon writes it only through short-lived handles, so it can rotate there too).
 
 `bin/layout.py` manages the block between `# >>> covr.sidebar layout` and `# <<< covr.sidebar` in herdr's `config.toml`:
 - **Idempotent:** installing twice changes nothing.
 - **Clean undo:** uninstalling removes exactly what install added.
 - **Conflicts:** it refuses a config that would define the same tables twice.
 - **Rollback:** it restores the old file if `herdr server reload-config` fails.
+- **Byte for byte:** line endings are kept (the block follows a CRLF file's endings), and a symlinked `config.toml` (stow, chezmoi, home-manager) is written through to its target.
+- **Light or dark:** `auto` picks latte colours for herdr's light themes (`catppuccin-latte`, `tokyo-night-day`, `gruvbox-light`, `one-light`, `solarized-light`, `kanagawa-lotus`, `rose-pine-dawn`) and for any theme name with a word like `light`, `day`, `dawn` or `latte`; mocha otherwise. Set `layout` to override.
 - **Older blocks:** a block written by an older covr version is recognised. Run `install-layout` again after an upgrade, so the block's colour rules match the current glyphs (0.4.3 changed asleep to `◗`; 0.5.0 added the kind-icon tokens; 0.5.1 made finished cyan).
 
 ## Platforms
@@ -173,7 +176,8 @@ The same code runs on Linux, macOS and Windows. Only a few mechanisms differ:
 |---|---|---|
 | herdr's API | Unix socket at `HERDR_SOCKET_PATH` | named pipe `\\.\pipe\<HERDR_SOCKET_PATH>` |
 | one daemon per session | `fcntl.flock` on `covrd.lock` | `msvcrt.locking` on `covrd.lock` |
-| waking the daemon (hooks, resync, stop) | `SIGUSR1` / `SIGUSR2` / `SIGTERM` | a word appended to the `wake` file, checked every 0.1 s |
+| waking the daemon (hooks, resync, stop) | `SIGUSR1` / `SIGUSR2` / `SIGTERM`, through a wakeup pipe | a word appended to the `wake` file, checked every 0.1 s |
+| API timeout | socket timeout, 5 s | the pipe read on a worker thread, 5 s |
 | detaching the daemon | new session | detached process group, broken away from the hook's job |
 | settings popup | curses | VT escape sequences, keys through `msvcrt` |
 | herdr's config / state | `~/.config/herdr` / `~/.local/state/herdr` | `%APPDATA%\herdr` / `%LOCALAPPDATA%\herdr` |

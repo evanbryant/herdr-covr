@@ -7,7 +7,7 @@
 #      E2E_ROOT    sandbox root; keep it short, unix sockets must stay < 108 chars (default: /tmp/covr-e2e)
 #      PYTHON      interpreter the sandboxed herdr runs the plugin with, e.g. a python3.8 (default: python3 on PATH)
 # tests: single tokens restart gone sessions disable popup notoml layout
-#        events width seq cap validate hygiene fight reload gitsafe viewed   (default: all)
+#        events width seq cap validate hygiene fight reload gitsafe viewed stopstays   (default: all)
 # Linux and macOS (daemons are attributed to the sandbox by their environment: /proc on Linux, ps -E on macOS).
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -307,7 +307,7 @@ t_validate() { # H7: bad values are refused by `set`, and ignored (with defaults
   [ "$n" -ge 1 ] && [ "$n" -le 4 ] || why+="$n 'ignored' log lines (want 1 per bad value, not per tick); "
   [ -z "$why" ] && ok validate || no validate "$why"
 }
-t_hygiene() { # H6 + H9: log rotates; memo keeps no raw paths or titles and only live ids
+t_hygiene() { # H6 + H9: log rotates; memo keeps no raw paths or titles and only live ids; state is owner-only
   fresh
   until_t 15 all_heads >/dev/null
   local d why=""; d=$(run_dir)
@@ -326,6 +326,9 @@ EOF
   grep -q "secret" "$d/memo.json" && why+="raw tcache key kept; "
   grep -q "w999" "$d/memo.json" && why+="closed workspace kept in focus/manual; "
   python3 -c 'import json, sys; t = json.load(open(sys.argv[1])).get("tcache") or {}; sys.exit(0 if all(k.startswith("h:") for k in t) else 1)' "$d/memo.json" || why+="unhashed tcache keys; "
+  python3 -c 'import os, sys; d = sys.argv[1].rstrip("/")
+bad = [n for n, m in ((d, 0o700), (d + "/covrd.log", 0o600), (d + "/covrd.lock", 0o600)) if os.stat(n).st_mode & 0o777 != m]
+sys.exit(bad and print(bad) or 0)' "$d" || why+="state readable by others; "
   [ -z "$why" ] && ok hygiene || no hygiene "$why"
 }
 t_fight() {   # H8: dragging spaces against an active sort makes the daemon back off instead of fighting
@@ -361,9 +364,13 @@ t_reload() {  # updating the plugin's files in place restarts the running daemon
 t_gitsafe() { # a repo's own git config can't run commands through the daemon's background `git status`
   fresh
   until_t 15 all_heads >/dev/null
+  # core.fsmonitor runs on any status; a clean filter runs on a stat-dirty tracked file (g: touched, same bytes)
   sb 'mkdir -p ~/r/hostile && cd ~/r/hostile && git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m i \
-      && echo x > f && git add f && git -c user.email=t@t -c user.name=t commit -qm f && echo y >> f \
-      && git config core.fsmonitor "sh -c \"touch $HOME/PWNED\" #"
+      && echo x > f && echo g > g && echo "g filter=evil" > .gitattributes && git add f g .gitattributes \
+      && git -c user.email=t@t -c user.name=t commit -qm f && echo y >> f && touch -d "2001-01-01" g \
+      && git config core.fsmonitor "sh -c \"touch $HOME/PWNED\" #" \
+      && git config filter.evil.clean "sh -c \"touch $HOME/PWNED; cat\"" \
+      && git config filter.evil.process "sh -c \"touch $HOME/PWNED\""
       herdr workspace create --cwd ~/r/hostile --label hostile --no-focus >/dev/null'
   local w; w=$(sb 'hsock workspace.list' | python3 -c 'import json, sys
 print([x["workspace_id"] for x in json.load(sys.stdin)["result"]["workspaces"] if x["label"] == "hostile"][0])')
@@ -371,7 +378,7 @@ print([x["workspace_id"] for x in json.load(sys.stdin)["result"]["workspaces"] i
   until_t 15 eval 'sb "hsock workspace.list" | grep -q "\"dirty\":\"±\""'
   local dirty; dirty=$(sb 'hsock workspace.list' | python3 -c 'import json, sys
 print([(x.get("tokens") or {}).get("dirty") for x in json.load(sys.stdin)["result"]["workspaces"] if x["workspace_id"] == sys.argv[1]][0])' "$w")
-  if [ -e "$B/home/PWNED" ]; then no gitsafe "the repo's core.fsmonitor ran"
+  if [ -e "$B/home/PWNED" ]; then no gitsafe "the repo's core.fsmonitor or filter driver ran"
   elif [ "$dirty" != "±" ]; then no gitsafe "dirty marker missing ($dirty)"
   else ok gitsafe; fi
 }
@@ -398,7 +405,22 @@ print([a["agent_status"] for a in json.load(sys.stdin)["result"]["agents"] if a[
   [ -z "$why" ] && ok viewed || no viewed "$why"
 }
 
-ALL="single tokens restart gone sessions disable popup notoml layout events width seq cap validate hygiene fight reload gitsafe viewed"
+t_stopstays() { # stop (the action or s in the popup) holds: hooks do not start the daemon again, start does
+  fresh
+  until_t 15 all_heads >/dev/null
+  act stop
+  local why=""
+  until_t 10 zero || why+="daemon still running after stop; "
+  sb 'set -- $(cat ~/panes); herdr pane report-agent $1 --source e2e --agent claude --state working; herdr pane report-agent $2 --source e2e --agent claude --state idle' >/dev/null
+  sleep 3                                                         # hooks fired: nothing may come back
+  zero || why+="a hook restarted the daemon ($(ndaemons)); "
+  no_heads || why+="rows came back while stopped ($(heads)); "
+  act start
+  until_t 20 all_heads || why+="not back after start ($(heads), $(ndaemons) daemons); "
+  [ -z "$why" ] && ok stopstays || no stopstays "$why"
+}
+
+ALL="single tokens restart gone sessions disable popup notoml layout events width seq cap validate hygiene fight reload gitsafe viewed stopstays"
 [ -n "${E2E_LIB:-}" ] && return 0   # sourced for its helpers (tools/screenshots/scene.sh)
 for t in ${*:-$ALL}; do "t_$t"; done
 [ -n "${KEEP:-}" ] || down

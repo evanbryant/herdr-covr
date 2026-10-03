@@ -76,8 +76,7 @@ def opts(**kw):
 class Base(unittest.TestCase):
     def setUp(self):
         self._call = covrd.call
-        with open(covrd.PINS, "w", encoding="utf-8") as f:
-            json.dump({"agents": [], "spaces": []}, f)
+        covrd.save_pins({"agents": [], "spaces": []})
 
     def tearDown(self):
         covrd.call = self._call
@@ -287,8 +286,7 @@ class Ordering(Base):
         self.assertTrue(out["p1"]["head"].startswith("◗ api"))
 
     def test_pinned_agent_leads_and_is_marked(self):
-        with open(covrd.PINS, "w", encoding="utf-8") as f:
-            json.dump({"agents": ["p1"], "spaces": []}, f)
+        covrd.save_pins({"agents": ["p1"], "spaces": []})
         out, *_ = self.run_compute(self.herdr())
         self.assertEqual(out["p1"]["pin"], "0")
         self.assertIn("★", out["p1"]["head"])
@@ -488,7 +486,7 @@ class Identity(Base):
                 self.assertTrue(label.startswith("[128]"))
                 self.assertLessEqual(covrd.cells(label), max(width - 9, 5), (width, label))
         self.assertEqual(covrd.view_params(opts(view="needs me", group_by="project"), "project", 22, 26)["label"],
-                         "[22] by project…")
+                         "[22] · by projec…")
 
     def test_look_alike_rows_get_task_tags(self):
         h = FakeHerdr([agent("p1", "w1", "idle", title="Docs refresh"), agent("p2", "w1", "idle", seq=2, title="Login bug")],
@@ -832,6 +830,440 @@ class Contract(unittest.TestCase):
             for v in vals:
                 self.assertIsNone(covrd.validate(key, v)[1], (key, v))
 
+
+class Hardening(Base):
+    """0.6.0: one test per finding of the 0.5.2 review (reports/bugcheck-0.5.2-2026-10-03)."""
+
+    def test_git_dirty_never_runs_a_repos_filter_drivers(self):  # F1
+        import shutil, subprocess
+        if not shutil.which("git"):
+            self.skipTest("no git")
+        repo = tempfile.mkdtemp(prefix="covr-git-")
+        flag = os.path.join(repo, "..", os.path.basename(repo) + ".ran")
+        git = lambda *a: subprocess.run(["git", "-C", repo, *a], capture_output=True, check=True)
+        git("init", "-q")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "t")
+        with open(os.path.join(repo, ".gitattributes"), "w") as f:
+            f.write("a.txt filter=evil\n")
+        for n in ("a.txt", "b.txt"):
+            with open(os.path.join(repo, n), "w") as f:
+                f.write("one\n")
+        git("add", ".")
+        git("commit", "-q", "-m", "x")
+        git("config", "filter.evil.clean", f"sh -c 'echo ran > \"{flag}\"; cat'")
+        git("config", "filter.evil.process", f"sh -c 'echo ran > \"{flag}\"'")
+        os.utime(os.path.join(repo, "a.txt"), (1, 1))  # stat-dirty: plain git status would run the filter
+        self.assertIn(covrd.git_dirty(repo), (False, None))
+        self.assertFalse(os.path.exists(flag))
+        with open(os.path.join(repo, "b.txt"), "a") as f:   # (a.txt itself uses the driver: left out of the check)
+            f.write("two\n")
+        self.assertTrue(covrd.git_dirty(repo))
+        self.assertFalse(os.path.exists(flag))
+
+    def test_a_failed_tick_leaves_no_old_wake_time(self):  # F2
+        memo = {"wake_at": 1.0}
+
+        def down(method, params=None):
+            raise covrd.ServerGone("gone")
+        covrd.call = down
+        with self.assertRaises(covrd.ServerGone):
+            covrd.compute(opts(), memo)
+        self.assertIsNone(memo["wake_at"])
+
+    def test_server_gone_is_only_the_socket(self):  # F13
+        self.assertTrue(covrd.server_unreachable(covrd.ServerGone("x")))
+        self.assertFalse(covrd.server_unreachable(FileNotFoundError(2, "herdr binary missing")))
+
+    def test_pins_belong_to_the_session_and_are_pruned_after_a_grace(self):  # F5, F11
+        self.assertTrue(covrd.PINS.startswith(covrd.RUN_DIR))
+        covrd.save_pins({"agents": ["p1", "gone"], "spaces": ["w1", "wgone"]})
+        memo = {}
+        p = covrd.prune_pins(covrd.load_pins(), {"p1"}, {"w1"}, memo, 1000)
+        self.assertEqual(p, {"agents": ["p1", "gone"], "spaces": ["w1", "wgone"]})   # a restore may be running
+        p = covrd.prune_pins(covrd.load_pins(), {"p1"}, {"w1"}, memo, 1000 + covrd.PIN_GRACE)
+        self.assertEqual(p, {"agents": ["p1"], "spaces": ["w1"]})
+        self.assertEqual(covrd.load_pins(), {"agents": ["p1"], "spaces": ["w1"]})
+
+    def test_legacy_shared_pins_move_into_the_default_session_only(self):  # F5, R5
+        os.remove(covrd.PINS)
+        with open(covrd.LEGACY_PINS, "w", encoding="utf-8") as f:
+            json.dump({"agents": ["p9"], "spaces": []}, f)
+        self.assertEqual(covrd.load_pins()["agents"], [])        # the tests run as a named session
+        saved = covrd.DEFAULT_SOCK
+        covrd.DEFAULT_SOCK = covrd.SOCK
+        try:
+            self.assertEqual(covrd.load_pins()["agents"], ["p9"])
+        finally:
+            covrd.DEFAULT_SOCK = saved
+        self.assertFalse(os.path.exists(covrd.LEGACY_PINS))
+
+    def test_pinning_a_shell_pane_is_refused(self):  # F11
+        covrd.call = FakeHerdr([agent("p1", "w1", "idle")], [space("w1", "web", 1)])
+        os.environ["HERDR_PANE_ID"] = "p7"
+        try:
+            self.assertEqual(covrd.toggle_pin("agents"), ("p7", None))
+            os.environ["HERDR_PANE_ID"] = "p1"
+            self.assertEqual(covrd.toggle_pin("agents"), ("p1", True))
+        finally:
+            os.environ.pop("HERDR_PANE_ID")
+        with self.assertRaises(ValueError):
+            covrd.toggle_pin("nonsense")
+
+    def test_first_push_clears_tokens_an_earlier_daemon_left(self):  # F6
+        sent, saved = [], covrd.report
+        covrd.report = lambda kind, target, set_=None, clear=(): sent.append((kind, target, dict(set_ or {}), sorted(clear)))
+        try:
+            memo = {"live": {"a": {"head", "pin", "wait", "rank"}}, "space_ids": ["w1"]}
+            covrd.call = lambda *a, **k: {}
+            covrd.apply({"a": {"head": "○ api", "rank": "1"}}, {}, {"label": "x"}, memo)
+            self.assertIn(("pane", "a", {"head": "○ api", "rank": "1"}, ["pin", "wait"]), sent)
+            self.assertIn(("workspace", "w1", {}, ["alert", "dirty", "spin"]), sent)
+            sent.clear()
+            covrd.apply({"a": {"head": "○ api", "rank": "1"}}, {}, {"label": "x"}, memo)
+            self.assertEqual(sent, [])  # once only
+        finally:
+            covrd.report = saved
+
+    def test_a_state_change_seen_after_a_gap_has_no_age(self):  # F21
+        clock, saved = FakeClock(), covrd.time
+        covrd.time = clock
+        try:
+            h = FakeHerdr([agent("p1", "w1", "working", seq=1)], [space("w1", "web", 1)])
+            _, _, _, memo = self.run_compute(h)
+            clock.now += 5
+            h.agents[0].update(agent_status="idle", state_change_seq=2)
+            out, *_ = self.run_compute(h, memo=memo)
+            self.assertTrue(out["p1"]["head"].endswith("<1m"))       # seen within a tick: it just happened
+            clock.now += 7200                                         # the daemon was stopped for 2 h
+            h.agents[0].update(agent_status="working", state_change_seq=3)
+            out, *_ = self.run_compute(h, memo=memo)
+            self.assertEqual(self.text(out["p1"]["head"]), "◐ web")
+            self.assertFalse(out["p1"]["head"].endswith("<1m"))
+        finally:
+            covrd.time = saved
+
+    def test_transcripts_only_for_claude_and_a_few_per_tick(self):  # F14
+        looked = []
+        saved = covrd.transcript_mtime
+        covrd.transcript_mtime = lambda *a: looked.append(a) or 1_000_000.0
+        try:
+            agents = [agent(f"p{i}", "w1", "idle", title=f"t{i}") for i in range(5)] + \
+                     [agent("px", "w1", "idle", kind="codex", title="tx")]
+            h = FakeHerdr(agents, [space("w1", "web", 1)])
+            _, _, _, memo = self.run_compute(h, opt=opts(age_source="claude-transcripts"))
+            self.assertEqual(len(looked), covrd.LOOKUPS_PER_TICK)
+            self.run_compute(h, opt=opts(age_source="claude-transcripts"), memo=memo)
+            self.assertEqual(len(looked), 5)                           # the rest next tick; never the codex agent
+        finally:
+            covrd.transcript_mtime = saved
+
+    def test_kind_group_rule_sits_on_the_last_shown_row(self):  # F25
+        h = FakeHerdr([agent("p1", "w1", "blocked"), agent("p2", "w1", "idle"),
+                       agent("p3", "w2", "done", kind="codex")], [space("w1", "web", 1), space("w2", "api", 2)])
+        out, *_ = self.run_compute(h, opt=opts(group_by="kind", view="needs me"))
+        self.assertIn("rule", out["p1"])         # p2 (idle) is hidden by the view
+        self.assertNotIn("rule", out["p2"])
+
+    def test_pin_star_survives_truncation(self):  # F26
+        row = covrd.pinned_row("○", "averyveryverylongspacename-for-tests", "5m", 26, " ★")
+        self.assertIn("… ★", row)
+        self.assertEqual(covrd.cells(row), 23)
+
+    def test_truncation_prefers_a_word_boundary(self):  # F31
+        self.assertEqual(covrd.cut("alpha beta gammadelta", 15), "alpha beta…")
+        self.assertEqual(covrd.cut("alpha betagammadelta", 15), "alpha betagamm…")  # no space late enough
+        self.assertEqual(covrd.cut("alphabetagammadelta", 10), "alphabeta…")
+
+    def test_pinned_worktree_space_moves_its_repo(self):  # F27
+        spaces = {"w1": space("w1", "web", 1), "w2": space("w2", "api", 2, worktree={"repo_key": "r"}),
+                  "w3": space("w3", "api-fix", 3, worktree={"repo_key": "r", "is_linked_worktree": True})}
+        plan = covrd.plan_spaces(opts(), spaces, [], {"agents": [], "spaces": ["w3"]}, {}, 0)
+        self.assertEqual(plan["want"], ["w2", "w3", "w1"])
+
+    def test_zero_width_characters_take_no_cells(self):  # F30
+        self.assertEqual(covrd.cells("a​b"), 2)
+        self.assertEqual(covrd.cells("\u2764\ufe0f"), 2)              # emoji presentation: 2 cells, as herdr draws it
+        self.assertEqual(covrd.cells("\u2764"), 1)
+        self.assertEqual(covrd.cells("\U0001F468‍\U0001F4BB"), 2)
+
+    def test_group_rule_follows_the_sidebar_width(self):  # F32
+        saved = covrd.sidebar_width
+        covrd.sidebar_width = lambda: 40
+        try:
+            h = FakeHerdr([agent("p1", "w1", "idle"), agent("p2", "w1", "idle", kind="codex")], [space("w1", "web", 1)])
+            out, *_ = self.run_compute(h, opt=opts(group_by="kind"))
+            rules = [t["rule"] for t in out.values() if "rule" in t]
+            self.assertEqual(rules, ["─" * 37])
+        finally:
+            covrd.sidebar_width = saved
+
+
+class OptionFile(unittest.TestCase):
+    def setUp(self):
+        self.path = covrd.OPTIONS
+
+    def tearDown(self):
+        if os.path.exists(self.path):
+            os.remove(self.path)
+
+    def write(self, text):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def read(self):
+        with open(self.path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_a_change_keeps_comments_and_other_lines(self):  # F3
+        self.write('# mine\ngroup_by = "project"  # keep\nstale_after = "2h"\n')
+        covrd.write_option("view", "cycle")
+        self.assertEqual(self.read(), '# mine\ngroup_by = "project"  # keep\nstale_after = "2h"\nview = "needs me"\n')
+        covrd.write_option("group_by", "kind")
+        self.assertIn('group_by = "kind"  # keep\n', self.read())
+        self.assertIn("# mine", self.read())
+
+    @unittest.skipIf(covrd.tomllib is None, "needs tomllib to tell a broken file")
+    def test_a_broken_file_is_never_overwritten(self):  # F3
+        broken = 'group_by = "project"\nview = "triage\n'
+        self.write(broken)
+        with self.assertRaises(ValueError):
+            covrd.write_option("view", "cycle")
+        self.assertEqual(self.read(), broken)
+
+    def test_byte_order_mark_is_accepted(self):  # F3
+        self.write('﻿group_by = "project"\n')
+        self.assertEqual(covrd.options()["group_by"], "project")
+
+    def test_cycle_flips_booleans_and_refuses_value_options(self):  # F19
+        self.assertIs(covrd.write_option("disambiguate", "cycle"), False)
+        for key in ("stale_after", "seen_after", "tick_seconds"):
+            with self.assertRaises(ValueError):
+                covrd.write_option(key, "cycle")
+        with self.assertRaises(ValueError):
+            covrd.write_option("nope", "cycle")
+
+    def test_kind_icon_cycles_in_the_popups_order(self):  # F19
+        self.assertEqual(covrd.CYCLES["kind_icon"][0], covrd.DEFAULTS["kind_icon"])
+        self.assertEqual(covrd.write_option("kind_icon", "cycle"), "left")
+
+    def test_infinite_or_foreign_numbers_are_refused(self):  # F20, F29
+        for v in (float("inf"), "inf", "nan", "٥", 7.5, True):
+            self.assertIsNotNone(covrd.validate("tick_seconds", v)[1], v)
+        self.assertIsNotNone(covrd.validate("stale_after", "٢h")[1])
+        self.write("tick_seconds = inf\n")
+        self.assertEqual(covrd.options()["tick_seconds"], covrd.DEFAULTS["tick_seconds"])
+
+    def test_write_follows_a_symlink(self):  # F7
+        if covrd.WIN:
+            self.skipTest("symlinks need privileges on Windows")
+        target = os.path.join(_TMP, "dotfiles-config.toml")
+        link = os.path.join(_TMP, "linked-config.toml")
+        with open(target, "w") as f:
+            f.write("a = 1\n")
+        if os.path.lexists(link):
+            os.remove(link)
+        os.symlink(target, link)
+        covrd.write_atomic(link, "a = 2\n")
+        self.assertTrue(os.path.islink(link))
+        with open(target) as f:
+            self.assertEqual(f.read(), "a = 2\n")
+
+
+class StopStays(unittest.TestCase):
+    def test_stop_marker_keeps_hooks_from_restarting_the_daemon(self):  # F4
+        spawned, saved = [], (covrd.spawn, covrd.signal_daemon, sys.argv)
+        covrd.spawn, covrd.signal_daemon = lambda: spawned.append(1), lambda kind="wake": None
+        try:
+            covrd.set_stopped(True)
+            sys.argv = ["covrd.py", "poke"]
+            covrd.main()
+            self.assertEqual(spawned, [])
+            covrd.set_stopped(False)
+            covrd.main()
+            self.assertEqual(spawned, [1])
+        finally:
+            covrd.spawn, covrd.signal_daemon, sys.argv = saved
+            covrd.set_stopped(False)
+
+    def test_poke_fast_path_respects_the_marker(self):  # F4
+        import subprocess
+        here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "bin", "poke.py")
+        covrd.set_stopped(True)
+        try:
+            r = subprocess.run([sys.executable, here], capture_output=True, timeout=10, env=os.environ.copy())
+            self.assertEqual(r.returncode, 0)
+            self.assertFalse(covrd.lock_held())
+        finally:
+            covrd.set_stopped(False)
+
+    @unittest.skipIf(os.name == "nt", "Unix wakeup pipe")
+    def test_wait_returns_on_a_signal_not_at_the_tick(self):  # F23
+        import signal as sig
+        woke = {"flag": False, "stop": False}
+        r, w = os.pipe()
+        os.set_blocking(r, False)
+        os.set_blocking(w, False)
+        old = sig.signal(sig.SIGUSR1, lambda *_: woke.update(flag=True))
+        prev = sig.set_wakeup_fd(w)
+        try:
+            sig.setitimer(sig.ITIMER_REAL, 0)
+            t0 = time.time()
+            import threading
+            threading.Timer(0.2, lambda: os.kill(os.getpid(), sig.SIGUSR1)).start()
+            covrd.wait(woke, {}, r, t0 + 10, 0.0)
+            self.assertLess(time.time() - t0, 2)
+            self.assertTrue(woke["flag"])
+        finally:
+            sig.set_wakeup_fd(prev)
+            sig.signal(sig.SIGUSR1, old)
+
+
+class LayoutDetails(unittest.TestCase):
+    def test_light_themes_by_word(self):  # F24
+        saved = covrd.options
+        covrd.options = lambda: dict(covrd.DEFAULTS)
+        try:
+            for name, want in (("kanagawa-lotus", "light"), ("rose-pine-dawn", "light"), ("tokyo-night-day", "light"),
+                               ("twilight", "dark"), ("catppuccin", "dark"), ("my_light_theme", "light")):
+                self.assertEqual(layout.variant(f'[theme]\nname = "{name}"\n'), want, name)
+        finally:
+            covrd.options = saved
+
+
+class ReviewFixes(Base):
+    """0.6.0 review of the fixes (R1..R20)."""
+
+    def test_a_closed_pane_does_not_turn_socket_reports_off(self):  # R1, R8, R16
+        sent, saved = [], (covrd.cli, dict(covrd.REPORT))
+        covrd.cli = lambda *a: sent.append(a)
+
+        def herdr(method, params=None):
+            if params.get("pane_id") == "gone":
+                raise covrd.HerdrError(method, {"code": "pane_not_found", "message": "pane gone not found"})
+            if method == "workspace.report_metadata":
+                raise covrd.HerdrError(method, {"code": "invalid_request", "message": "unknown variant `workspace.report_metadata`"})
+            return {}
+        covrd.call = herdr
+        try:
+            covrd.report("pane", "gone", {}, ["head"])
+            self.assertTrue(covrd.REPORT["socket"])
+            covrd.report("pane", "live", {"head": "x"})
+            self.assertEqual(sent, [])
+            covrd.report("workspace", "w1", {"dirty": "±"})    # a server without the method: CLI from now on
+            self.assertFalse(covrd.REPORT["socket"])
+            self.assertEqual(sent[0][:2], ("workspace", "report-metadata"))
+        finally:
+            covrd.cli = saved[0]
+            covrd.REPORT.update(saved[1])
+
+    def git_repo(self, attrs, drivers):
+        """A repo whose drivers are active when it is committed (as with git-lfs), then made stat-dirty."""
+        import shutil, subprocess
+        if not shutil.which("git"):
+            self.skipTest("no git")
+        repo = tempfile.mkdtemp(prefix="covr-git-")
+        flag = repo + ".ran"
+        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        git = lambda *a: subprocess.run(["git", "-C", repo, *a], capture_output=True, check=True, env=env)
+        git("init", "-q")
+        git("config", "user.email", "t@example.com")
+        git("config", "user.name", "t")
+        for name in drivers:
+            git("config", f"filter.{name}.clean", f"sh -c 'echo ran >> \"{flag}\"; tr a-z A-Z'")
+        os.makedirs(os.path.join(repo, "sub"))
+        with open(os.path.join(repo, ".gitattributes"), "w") as f:
+            f.write(attrs)
+        for n in ("g", "f", os.path.join("sub", "s")):
+            with open(os.path.join(repo, n), "w") as f:
+                f.write("abc\n")
+        git("add", ".")
+        git("commit", "-q", "-m", "x")
+        subprocess.run(["git", "-C", repo, "status"], capture_output=True, env=env)  # refresh the index
+        if os.path.exists(flag):
+            os.remove(flag)
+        os.utime(os.path.join(repo, "g"), (1, 1))
+        return repo, flag
+
+    def test_a_driver_named_with_equals_is_never_run(self):  # R2
+        repo, flag = self.git_repo("g filter=a=b\n", ["a=b"])
+        self.assertIsNone(covrd.git_dirty(repo))
+        self.assertFalse(os.path.exists(flag))
+
+    def test_filtered_files_do_not_show_as_changed(self):  # R13
+        repo, flag = self.git_repo("g filter=up\n", ["up"])
+        self.assertIs(covrd.git_dirty(repo), False)          # g is stat-dirty and its filter is off: still clean
+        self.assertIs(covrd.git_dirty(os.path.join(repo, "sub")), False)
+        self.assertFalse(os.path.exists(flag))
+        with open(os.path.join(repo, "f"), "a") as f:
+            f.write("more\n")
+        self.assertIs(covrd.git_dirty(repo), True)
+        self.assertIs(covrd.git_dirty(os.path.join(repo, "sub")), True)   # a change outside the pane's subdirectory
+
+    def test_odd_driver_names_still_get_a_dirty_check(self):  # final confirm: '.', ',', ':' in a driver name
+        repo, flag = self.git_repo("g filter=a.b\n", ["a.b"])
+        self.assertIsNotNone(covrd.git_dirty(repo))
+        with open(os.path.join(repo, "f"), "a") as f:
+            f.write("more\n")
+        self.assertIs(covrd.git_dirty(os.path.join(repo, "sub")), True)
+        self.assertFalse(os.path.exists(flag))
+
+    def test_long_ticks_keep_the_age_of_live_changes(self):  # R3
+        clock, saved = FakeClock(), covrd.time
+        covrd.time = clock
+        try:
+            h = FakeHerdr([agent("p1", "w1", "working", seq=1)], [space("w1", "web", 1)])
+            _, _, _, memo = self.run_compute(h, opt=opts(tick_seconds=45))
+            clock.now += 40
+            h.agents[0].update(agent_status="idle", state_change_seq=2)
+            out, *_ = self.run_compute(h, opt=opts(tick_seconds=45), memo=memo)
+            self.assertTrue(out["p1"]["head"].endswith("<1m"))
+        finally:
+            covrd.time = saved
+
+
+class OptionLines(unittest.TestCase):
+    def tearDown(self):
+        if os.path.exists(covrd.OPTIONS):
+            os.remove(covrd.OPTIONS)
+
+    def roundtrip(self, before, key, value):
+        with open(covrd.OPTIONS, "w", encoding="utf-8", newline="") as f:
+            f.write(before)
+        covrd.write_option(key, value)
+        with open(covrd.OPTIONS, encoding="utf-8", newline="") as f:
+            return f.read()
+
+    def test_key_only_inside_a_table_gets_a_top_level_line(self):  # R10
+        after = self.roundtrip('[extra]\nview = "here+"\n', "view", "needs me")
+        self.assertEqual(after, 'view = "needs me"\n[extra]\nview = "here+"\n')
+
+    def test_literal_quoted_key_is_rewritten_in_place(self):  # R11
+        self.assertEqual(self.roundtrip("'view' = \"triage\"\n", "view", "here+"), 'view = "here+"\n')
+
+    def test_crlf_and_trailing_comments_stay(self):  # R12
+        after = self.roundtrip('# mine\r\nview = "triage"  # keep me\r\nlabel = "task"\r\n', "view", "needs me")
+        self.assertEqual(after, '# mine\r\nview = "needs me"  # keep me\r\nlabel = "task"\r\n')
+
+
+class LayoutNoFinalNewline(unittest.TestCase):
+    def test_uninstall_restores_a_file_without_a_final_newline(self):  # R4
+        import subprocess
+        cfg = os.path.join(_TMP, "herdr-config-noeol.toml")
+        saved = (covrd.HERDR_CONFIG, covrd.notify, layout.subprocess.run)
+        covrd.HERDR_CONFIG, covrd.notify = cfg, lambda body: None
+        layout.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0, "", "")
+        try:
+            for orig in ("onboarding = false\n[ui]\nsidebar_width = 30", "onboarding = false\n", "a = 1\r\nb = 2"):
+                with open(cfg, "w", encoding="utf-8", newline="") as f:
+                    f.write(orig)
+                self.assertEqual(layout.install(), 0)
+                self.assertEqual(layout.install(), 0)            # idempotent, marker kept
+                self.assertEqual(layout.uninstall(), 0)
+                with open(cfg, encoding="utf-8", newline="") as f:
+                    self.assertEqual(f.read(), orig, repr(orig))
+        finally:
+            covrd.HERDR_CONFIG, covrd.notify, layout.subprocess.run = saved
 
 if __name__ == "__main__":
     unittest.main()

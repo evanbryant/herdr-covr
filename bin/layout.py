@@ -17,9 +17,14 @@ import covrd  # noqa: E402
 
 LAYOUTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "layouts")
 BLOCK = re.compile(r"^# >>> covr\.sidebar(?! keys)[^\n]*\n.*?^# <<< covr\.sidebar[ \t]*\r?(?:\n|\Z)", re.M | re.S)
-LIGHT = ("latte", "light", "day", "dawn", "morning")
+# herdr's built-in light themes (0.9.3: catppuccin-latte, tokyo-night-day, gruvbox-light, one-light,
+# solarized-light, kanagawa-lotus, rose-pine-dawn); a custom name counts as light when one of its words is
+LIGHT = {"latte", "light", "day", "dawn", "morning", "lotus"}
 # tables the block defines; a copy outside the block makes the file invalid TOML (duplicate table)
 OURS = re.compile(r"^[ \t]*\[[ \t]*ui\.sidebar\.(spaces|agents)[ \t]*\]", re.M)
+# on the opening line when install had to end the user's last line first (the file had no final newline), so
+# uninstall takes that newline back out too
+NO_EOL = " (config had no final newline)"
 THEME_CUSTOM = re.compile(r"^[ \t]*\[[ \t]*theme\.custom[ \t]*\]", re.M)
 
 
@@ -28,8 +33,8 @@ def variant(text):
     want = covrd.options().get("layout", "auto")
     if want in ("light", "dark"):
         return want
-    name = (theme_name(text) or "").lower()
-    return "light" if any(w in name for w in LIGHT) else "dark"
+    words = re.split(r"[^a-z0-9]+", (theme_name(text) or "").lower())
+    return "light" if LIGHT & set(words) else "dark"
 
 
 def theme_name(text):
@@ -42,7 +47,10 @@ def block_for(text):
     block = covrd.read_text(os.path.join(LAYOUTS, "latte.toml" if v == "light" else "mocha.toml"))
     if THEME_CUSTOM.search(text):
         block = re.sub(r"^\[theme\.custom\]\n(?:[^\[\n][^\n]*\n)*\n?", "", block, flags=re.M)
-    return block if block.endswith("\n") else block + "\n", v
+    block = block if block.endswith("\n") else block + "\n"
+    if text.count("\r\n") * 2 > text.count("\n"):
+        block = block.replace("\r\n", "\n").replace("\n", "\r\n")  # match a CRLF config
+    return block, v
 
 
 def valid(text):
@@ -61,7 +69,7 @@ def reload_or_restore(path, before, existed):
     if r.returncode == 0:
         return True
     if existed:
-        covrd.write_atomic(path, before)
+        covrd.write_atomic(path, before, newline="")
     else:
         os.remove(path)
     covrd.notify("herdr rejected the layout, config.toml restored: " + (r.stderr or r.stdout).strip()[:160])
@@ -71,7 +79,7 @@ def reload_or_restore(path, before, existed):
 def install():
     path = covrd.HERDR_CONFIG
     existed = os.path.exists(path)
-    text = covrd.read_text(path, "") if existed else ""
+    text = covrd.read_text(path, "", newline="") if existed else ""  # newline="": line endings stay as they are
     m = BLOCK.search(text)
     outside = text[:m.start()] + text[m.end():] if m else text
     if OURS.search(outside):
@@ -79,12 +87,16 @@ def install():
                      "outside the covr block; remove those tables, then retry")
         return 1
     block, v = block_for(outside)
+    mark = lambda b: b.replace(" layout", " layout" + NO_EOL, 1)
     if m:
+        if NO_EOL in m.group(0).splitlines()[0]:
+            block = mark(block)
         new = text[:m.start()] + block + text[m.end():]
     elif not text:
         new = block
     else:  # one blank line between the user's config and the block (uninstall takes it back out)
-        new = text + ("\n" if text.endswith("\n") else "\n\n") + block
+        nl = "\r\n" if block.endswith("\r\n") else "\n"
+        new = text + (nl if text.endswith("\n") else nl + nl) + (block if text.endswith("\n") else mark(block))
     if not valid(new):
         covrd.notify("not installed: the result would not be valid TOML (config.toml left unchanged)")
         return 1
@@ -92,7 +104,7 @@ def install():
         covrd.notify(f"layout already installed ({v})")
         return 0
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    covrd.write_atomic(path, new)
+    covrd.write_atomic(path, new, newline="")
     if not reload_or_restore(path, text, existed):
         return 1
     covrd.notify(f"layout installed ({v}); agent rows fill in while the daemon runs")
@@ -101,16 +113,19 @@ def install():
 
 def uninstall():
     path = covrd.HERDR_CONFIG
-    text = covrd.read_text(path, "")
+    text = covrd.read_text(path, "", newline="")
     m = BLOCK.search(text)
     if not m:
         covrd.notify("no covr layout in config.toml")
         return 0
     head, tail = text[:m.start()], text[m.end():]
-    if not tail and head.endswith("\n\n"):
-        head = head[:-1]  # the blank line install put before an appended block
+    nl = "\r\n" if head.endswith("\r\n") else "\n"
+    if not tail and head.endswith(nl + nl):
+        head = head[:-len(nl)]  # the blank line install put before an appended block
+        if NO_EOL in m.group(0).splitlines()[0] and head.endswith(nl):
+            head = head[:-len(nl)]  # and the newline it added to the user's last line
     new = head + tail
-    covrd.write_atomic(path, new)
+    covrd.write_atomic(path, new, newline="")
     if not reload_or_restore(path, text, True):
         return 1
     covrd.notify("layout removed from config.toml")

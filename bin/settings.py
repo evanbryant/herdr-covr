@@ -38,12 +38,12 @@ HELP = {
     "label": "what identifies an agent row",
     "show_tab": "named = only tabs you renamed (auto-numbered tabs hidden)",
     "show_kind": "auto = only while more than one kind is running · always = on every row",
-    "kind_icon": "right × api 2m · ✻ · left ✻ · × api (brand colour, grey when asleep) · inline × ✻ api (row colour)",
+    "kind_icon": "right/left: own token in brand colour · inline: after the glyph, row colour",
     "show_task": "attention = blocked reason + what finished",
     "disambiguate": "adds 1–2 words of the task when two rows would look identical",
     "stale_after": "idle longer than this dims to ◗ and sinks",
     "seen_after": "a finished agent you already have selected turns from ✓ to ○ after this long",
-    "age_source": "observed = no age until a state changes · claude-transcripts = look it up in ~/.claude*",
+    "age_source": "observed: no age until a state changes · claude-transcripts: look it up",
 }
 FOOTER = "↑↓ select   ←→/enter change   s start/stop daemon   q close"
 
@@ -53,21 +53,48 @@ def show(v):
 
 
 def screen(sel, height):
-    """The popup's lines as (text, style) with style in bold | dim | reverse | normal; the last line is the footer."""
+    """The popup's lines as (text, style) with style in bold | dim | reverse | normal; the last line is the footer.
+    A popup too short for everything scrolls the options so the selected one stays in view; the help line and
+    the footer always show."""
     opt, pins = covrd.options(), covrd.load_pins()
+    try:  # count only pins whose agent or space is still open (the daemon drops the rest a minute later)
+        agents = {a["pane_id"] for a in covrd.call("agent.list")["agents"]}
+        spaces = {w["workspace_id"] for w in covrd.call("workspace.list")["workspaces"]}
+        pins = {"agents": [x for x in pins["agents"] if x in agents], "spaces": [x for x in pins["spaces"] if x in spaces]}
+    except Exception:
+        pass
     status = "daemon running" if covrd.alive() else "daemon STOPPED (s to start)"
-    lines = [("covr — settings", "bold"),
-             (f"{status} · pinned: {len(pins['agents'])} agents, {len(pins['spaces'])} spaces", "dim")]
-    i = 0
+    body = [("covr — settings", "bold"),
+            (f"{status} · pinned: {len(pins['agents'])} agents, {len(pins['spaces'])} spaces", "dim")]
+    i, at = 0, 0
     for title, items in SECTIONS:
-        lines += [("", "normal"), (title, "bold")]
+        body += [("", "normal"), (title, "bold")]
         for key, label, _ in items:
-            lines.append((f"  {label:<31} ‹ {show(opt.get(key))} ›", "reverse" if i == sel else "normal"))
+            if i == sel:
+                at = len(body)
+            body.append((f"  {label:<31} ‹ {show(opt.get(key))} ›", "reverse" if i == sel else "normal"))
             i += 1
-    lines += [("", "normal"), (HELP.get(ITEMS[sel][0], ""), "dim")]
-    lines = lines[:max(1, height - 1)]
+    room = max(1, height - 3)  # footer, help and the blank line above it
+    if len(body) > room:
+        start = min(max(0, at - room // 2), len(body) - room)
+        body = body[start:start + room]
+    lines = body + [("", "normal"), (HELP.get(ITEMS[sel][0], ""), "dim")]
+    lines = lines[-max(1, height - 1):] if len(lines) > height - 1 else lines
     lines += [("", "normal")] * max(0, height - 1 - len(lines))
     return lines + [(FOOTER, "dim")]
+
+
+def step(name, vals, cur, key):
+    """The value ←/→ moves to. A duration set by hand (45m) moves to the nearest preset in that direction."""
+    if cur not in vals and name in ("stale_after", "seen_after") and covrd.validate(name, cur)[1] is None:
+        secs = lambda v: 0 if v == "off" else covrd.seconds(v)
+        if key == "left":
+            lower = [v for v in vals if secs(v) < secs(cur)]
+            return lower[-1] if lower else vals[-1]
+        higher = [v for v in vals if secs(v) > secs(cur)]
+        return higher[0] if higher else vals[0]
+    i = vals.index(cur) if cur in vals else -1
+    return vals[(i - 1) % len(vals) if key == "left" else (i + 1) % len(vals)]
 
 
 def handle(key, sel):
@@ -80,13 +107,11 @@ def handle(key, sel):
         return (sel + 1) % len(ITEMS)
     if key in ("left", "right", "enter"):
         name, _, vals = ITEMS[sel]
-        cur = covrd.options().get(name)
-        i = vals.index(cur) if cur in vals else -1
-        i = (i - 1) % len(vals) if key == "left" else (i + 1) % len(vals)
+        v = step(name, vals, covrd.options().get(name), key)
         try:
-            covrd.write_option(name, str(vals[i]).lower() if isinstance(vals[i], bool) else vals[i])
-        except ValueError:
-            pass
+            covrd.write_option(name, str(v).lower() if isinstance(v, bool) else v)
+        except ValueError as e:
+            covrd.notify(f"not changed: {e}")  # e.g. a config.toml that does not parse
         covrd.signal_daemon()
     elif key == "s":
         if covrd.alive():
