@@ -63,12 +63,19 @@ FIGHT_MOVES, FIGHT_WINDOW, FIGHT_PAUSE = 3, 60, 300  # re-applying one order 3x 
 ZW = "​"
 
 DEFAULTS = {"layout": "auto", "age_source": "observed", "seen_after": "5s", "label": "space", "show_kind": "never", "group_by": "none", "show_task": "attention",
-            "disambiguate": True, "stale_after": "30m", "view": "triage", "space_sort": "manual", "show_tab": "named", "tick_seconds": 5}
+            "disambiguate": True, "show_icon": True, "stale_after": "30m", "view": "triage", "space_sort": "manual", "show_tab": "named", "tick_seconds": 5}
 CYCLES = {"view": ["triage", "needs me", "here+"], "group_by": ["none", "project", "kind"],
           "show_kind": ["never", "auto", "always"], "label": ["space", "task"],
           "show_task": ["attention", "all", "never"], "space_sort": ["manual", "alpha", "recent", "activity"],
           "show_tab": ["named", "always", "never"], "layout": ["auto", "light", "dark"],
           "age_source": ["observed", "claude-transcripts"]}
+# one single-width mark per agent kind, shown after the state glyph. Claude's ✻ and Gemini's ✦ are their own marks;
+# the rest are the nearest plain shape. None of them reuses a state glyph (× ✓ ◐ ○ ◗ ·).
+ICON = {"claude": "✻", "codex": "◈", "gemini": "✦", "grok": "⊘", "cursor": "◆", "github_copilot": "◉", "copilot": "◉",
+        "opencode": "◫", "open_code": "◫", "amp": "▲", "droid": "▤", "pi": "π", "omp": "∏", "qwen": "✧", "kimi": "◍",
+        "cline": "◘", "devin": "◇", "hermes": "☿", "letta": "λ", "kilo": "▣", "qoder": "◪", "qodercli": "◪",
+        "agy": "◢", "kiro": "▽", "mastracode": "►"}
+ICON_OTHER = "▫"
 GLYPH = {"blocked": "×", "done": "✓", "working": "◐", "idle": "○", "unknown": "·", "stale": "◗"}
 PRIO = {"blocked": 4, "done": 3, "working": 2, "idle": 1, "unknown": 0}
 PINS = os.path.join(STATE_DIR, "pins.json")
@@ -735,6 +742,10 @@ def compute(opt, memo):
             if opt["show_kind"] == "always" or (show_kind and mode != "kind") or (mode == "kind" and r["pid"] in firsts and len(kinds) > 1):
                 parts.append(r["kind"])
         body = " · ".join(parts) + (" ★" if r["pinned"] else "")
+        if opt["show_icon"]:
+            # [status] [kind] [label]: inside $head, so it takes the row's state colour. As its own token it could
+            # be brand-coloured, but herdr joins tokens with an unconfigurable " · " and that costs 4 cells
+            body = f"{ICON.get(r['kind'], ICON_OTHER)} {body}"
         t["head"] = pinned_row(glyph, body, fmt_age(r["age"]), width)
         if r["pinned"]:
             t["pin"] = "0"
@@ -794,7 +805,7 @@ def compute(opt, memo):
             wout.setdefault(wid, {})["spin"] = "★"
     memo["space_plan"] = plan_spaces(opt, spaces, rows, pins, memo, now)
 
-    view = view_params(opt, mode)
+    view = view_params(opt, mode, len(rows), width)
     return out, wout, view
 
 
@@ -850,7 +861,7 @@ def plan_spaces(opt, spaces, rows, pins, memo, now):
     return {"cur": cur, "want": want}
 
 
-def view_params(opt, mode):
+def view_params(opt, mode, count=None, width=None):
     group = mode != "none"
     if group:
         sort = [{"field": {"token": "grp"}, "order": "asc"}, {"field": {"token": "pin"}, "order": "asc"},
@@ -868,6 +879,21 @@ def view_params(opt, mode):
             {"op": "eq", "field": "workspace_id", "value": {"context": "current_workspace_id"}}, need]}
     if group and opt["view"] != "triage":
         p["label"] = f"{glabel} · {opt['view']}"
+    if count is not None:
+        # every open agent, whatever the view shows. herdr right-aligns the label after its own "agents", so blanks
+        # it doesn't trim push the count left to sit beside the word: "agents [12]         triage"
+        # herdr draws a label too long for its row over the word "agents", so it must fit width - 9 cells
+        # (1 indent + "agents" + 1 space + 1 divider); when it doesn't, the view name is cut, never the count
+        n, fit = f"[{count}]", (width or 26) - 9
+        room = fit - cells(n) - cells(p["label"])
+        if room >= 2:
+            p["label"] = n + BLANK * room + p["label"]
+        else:
+            view = p["label"]
+            while view and cells(n) + 1 + cells(view) > fit - (0 if view == p["label"] else 1):
+                view = view[:-1]
+            view = view.rstrip(" ·")
+            p["label"] = n + (" " + view + ("" if view == p["label"] else "…") if view else "")
     return p
 
 

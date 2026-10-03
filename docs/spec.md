@@ -1,6 +1,6 @@
 # covr: design and behaviour
 
-This is how covr (plugin id `covr.sidebar`, version 0.3) draws herdr's sidebar and how its daemon behaves. The README covers installation and a quick tour.
+This is how covr (plugin id `covr.sidebar`, version 0.5) draws herdr's sidebar and how its daemon behaves. The README covers installation and a quick tour.
 
 ## Agents
 
@@ -9,11 +9,12 @@ This is how covr (plugin id `covr.sidebar`, version 0.3) draws herdr's sidebar a
 ### Rows
 
 ```
-× api                        2m   glyph · label [· tab] [· tag] [· kind]      age
+agents [9]               triage   header: every open agent, then the view
+× ✻ api                      2m   glyph · kind icon · label [· tab] [· tag] [· kind]      age
   ↳ Bash(npm run migrate:up)      blocked only: what it is asking (red)
-✓ web                       <1m
+✓ ◈ web                     <1m
   ↳ Fix checkout redirect         finished and not yet seen: the task (teal)
-◗ docs                     2h1m   idle past stale_after (asleep): the whole row dims
+◗ ✻ docs                   2h1m   idle past stale_after (asleep): the whole row dims
 ```
 
 - **Blocked reason:** read from the pane: the command above an approval prompt, otherwise the last question on screen (`?` or `？`, optionally followed by a `[y/N]` choice). A question that wraps is joined back up and shown from its start, cut at a word with `…`. On Claude Code's question form, the question's short header leads: `Deploy: Ship it?`. Only a real form counts (a line of nothing but `☐`/`☒`/`✔` tabs, with the form's `Enter to select · … · Esc to cancel` footer below), so a todo list is never taken for a header.
@@ -23,6 +24,8 @@ This is how covr (plugin id `covr.sidebar`, version 0.3) draws herdr's sidebar a
 - **Truncation:** long labels are cut at a word boundary with `…`. The space name is shortened before the tab name, and the age is never cut. No token exceeds herdr's 80-character limit.
 - **Tabs:** tab names show only for tabs you renamed (`show_tab = named`); auto-numbered tabs are hidden.
 - **Look-alike rows:** when two agents in one space and tab would render the same, each gets one or two words of its task (`web · Docs refresh` / `web · Login bug`).
+- **Kind icon:** one mark per agent kind between the state glyph and the label (`show_icon`, on by default; costs 2 cells). Claude's `✻` and Gemini's `✦` are the brands' own marks; the others are plain shapes: codex `◈`, grok `⊘`, cursor `◆`, copilot `◉`, opencode `◫`, amp `▲`, droid `▤`, pi `π`, omp `∏`, qwen `✧`, kimi `◍`, cline `◘`, devin `◇`, hermes `☿`, letta `λ`, kilo `▣`, qodercli `◪`, agy `◢`, kiro `▽`, mastracode `►`, anything else `▫`. None reuses a state glyph. The icon is part of `$head`, so it takes the row's state colour: as a token of its own it could be brand-coloured, but herdr puts an unconfigurable ` · ` between tokens. Official logos would need an icon font on every machine, so they are left for a later opt-in mode.
+- **Agent count:** the Agents header shows `agents [N]`, N being every open agent whatever the view filters. herdr right-aligns a view's label, so the daemon pads it with U+2800 to put the count beside the word; on a sidebar too narrow for that it falls back to `[N] · <view>`. herdr's Spaces header can't be labelled by a plugin.
 - **Agent kind:** hidden by default (`show_kind`). `auto` shows it while more than one kind runs: on every row, or once per group under `group_by = kind`. `always` puts it on every row under any grouping.
 - **Task titles** are herdr's `terminal_title_stripped`; Claude Code sets it to the session title.
 - **`label = task`** replaces the space name with the task title. Anything that would repeat the title is then left out (the finished line, the `all` second lines, look-alike tags, tab names). The blocked line stays.
@@ -111,6 +114,7 @@ Options are stored in `$(herdr plugin config-dir covr.sidebar)/config.toml`. The
 | `label` | `space` · `task` |
 | `show_tab` | `named` · `always` · `never` |
 | `show_kind` | `never` · `auto` (only while more than one kind runs) · `always` |
+| `show_icon` | `true` · `false` (kind icon between the glyph and the label) |
 | `show_task` | `attention` (blocked reason and finished task) · `all` · `never` |
 | `disambiguate` | `true` · `false` |
 | `stale_after` | `30m`; any duration from `1m` to `30d` |

@@ -68,7 +68,7 @@ def space(wid, label, number, **kw):
 
 
 def opts(**kw):
-    o = dict(covrd.DEFAULTS)
+    o = dict(covrd.DEFAULTS, show_icon=False)  # row-text tests read cleaner without the kind icon; icon tests turn it on
     o.update(kw)
     return o
 
@@ -432,10 +432,43 @@ class Identity(Base):
         self.assertEqual(len(labelled), 2)  # once per group
         self.assertEqual(sum(1 for t in out.values() if "rule" in t), 1)
 
+    def test_kind_icon_sits_between_status_and_label(self):
+        h = FakeHerdr([agent("p1", "w1", "idle", kind="claude"), agent("p2", "w2", "blocked", seq=2, kind="gemini"),
+                       agent("p3", "w3", "idle", seq=3, kind="mystery")],
+                      [space("w1", "api", 1), space("w2", "web", 2), space("w3", "docs", 3)])
+        out, *_ = self.run_compute(h, opt=opts(show_icon=True))
+        self.assertEqual(self.text(out["p1"]["head"]), "○ ✻ api")
+        self.assertEqual(self.text(out["p2"]["head"]), "× ✦ web")
+        self.assertEqual(self.text(out["p3"]["head"]), f"○ {covrd.ICON_OTHER} docs")
+        self.assertTrue(covrd.DEFAULTS["show_icon"])
+
+    def test_icons_never_reuse_a_state_glyph(self):
+        marks = set(covrd.ICON.values()) | {covrd.ICON_OTHER}
+        self.assertFalse(marks & set(covrd.GLYPH.values()))
+        self.assertTrue(all(covrd.cells(m) == 1 for m in marks))
+
+    def test_header_counts_every_agent_whatever_the_view_shows(self):
+        h = FakeHerdr([agent("p1", "w1", "idle"), agent("p2", "w1", "blocked", seq=2)], [space("w1", "web", 1)])
+        *_, view, _ = self.run_compute(h, opt=opts(view="needs me"))
+        self.assertTrue(view["label"].startswith("[2]") and view["label"].endswith("needs me"))
+
+    def test_count_sits_beside_the_header_word(self):
+        # herdr right-aligns the label: blanks push the count left, to just after "agents"
+        label = covrd.view_params(opts(), "none", 12, 34)["label"]
+        self.assertEqual(label.replace(BLANK, "_"), "[12]" + "_" * (34 - 9 - 4 - 6) + "triage")
+        # regression: a label longer than its row is drawn over the word "agents"; the view name gives way, not the count
+        for width in range(10, 60):
+            for o, mode in ((opts(), "none"), (opts(view="needs me", group_by="project"), "project")):
+                label = covrd.view_params(o, mode, 128, width)["label"]
+                self.assertTrue(label.startswith("[128]"))
+                self.assertLessEqual(covrd.cells(label), max(width - 9, 5), (width, label))
+        self.assertEqual(covrd.view_params(opts(view="needs me", group_by="project"), "project", 22, 26)["label"],
+                         "[22] by project…")
+
     def test_look_alike_rows_get_task_tags(self):
         h = FakeHerdr([agent("p1", "w1", "idle", title="Docs refresh"), agent("p2", "w1", "idle", seq=2, title="Login bug")],
                       [space("w1", "web", 1)])
-        out, *_ = self.run_compute(h)
+        out, *_ = self.run_compute(h, opt=opts(show_icon=False))  # 26 cells: icons would shorten the name
         self.assertEqual(self.text(out["p1"]["head"]), "○ web · Docs refresh")
         self.assertEqual(self.text(out["p2"]["head"]), "○ web · Login bug")
 
@@ -443,7 +476,7 @@ class Identity(Base):
         h = FakeHerdr([agent("p1", "w1", "idle", title="Docs refresh"), agent("p2", "w1", "idle", seq=2, title="Login bug"),
                        agent("p3", "w1", "idle", seq=3, title="Cache rewrite")],
                       [space("w1", "web", 1)], [{"tab_id": "w1:t1", "label": "review"}])
-        out, *_ = self.run_compute(h, opt=opts(group_by="project"))
+        out, *_ = self.run_compute(h, opt=opts(group_by="project", show_icon=False))  # 26 cells: no room for the icon too
         self.assertEqual(len({t["head"] for t in out.values()}), 3)
         self.assertTrue(all("rev" in t["head"] for t in out.values()))
         out, *_ = self.run_compute(h, opt=opts(group_by="project", disambiguate=False))
@@ -467,7 +500,7 @@ class Identity(Base):
         self.assertTrue(out["p2"]["head"].startswith("○ " + BLANK * 2))  # member row: indented, no project name
         self.assertLess(out["p1"]["grp"], out["p3"]["grp"])  # the blocked agent's project leads
         self.assertEqual(view["sort"][0]["field"], {"token": "grp"})
-        self.assertEqual(view["label"], "by project")
+        self.assertTrue(view["label"].startswith("[3]") and view["label"].endswith("by project"))
 
 
 class Options(unittest.TestCase):

@@ -12,7 +12,7 @@ tools/screenshots/render.py /tmp/shots/settings.ans /tmp/shots/settings.html
 ```
 
 `scene.sh` uses the e2e helpers and the same environment (`HERDR_BIN`, `E2E_ROOT`, `PLUGIN_DIR`). The demo session:
-- nine agents across repos, one of them a worktree
+- nine agents across repos, one of them a worktree, in six kinds (claude, codex, gemini, grok, opencode, cursor)
 - one agent blocked on a prompt, and one that just finished
 - a renamed tab, and a repo with uncommitted changes
 - ages set in the daemon's memo, so the rows show realistic times

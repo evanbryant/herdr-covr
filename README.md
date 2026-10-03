@@ -25,6 +25,8 @@ Both screenshots show the same session, captured headless from the test sandbox 
 | `○` | idle (viewed) | — |
 | `◗` | asleep: idle for longer than `stale_after` (30 min), dimmed | — |
 
+- **Kind icon:** after the glyph, one mark per agent type: `✻` claude, `◈` codex, `✦` gemini, `⊘` grok, `◆` cursor, `◫` opencode, and so on for every agent herdr detects (`show_icon = false` hides them).
+- **Count:** the header reads `agents [N]`, every agent you have open.
 - **Order:** blocked, then finished, then working, then idle. Within a state, the most recent change comes first.
 - **Stable positions:** rows move only when an agent's state changes, never because an age ticked over.
 - **Age:** time in the current state, on the right. For an idle agent that means time since you viewed it, so the 30 minutes to asleep also start then.

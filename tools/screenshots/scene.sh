@@ -22,7 +22,7 @@ shot() { # <name>
   echo "captured $1"
 }
 theme() { # <theme name> — the demo's herdr config; the plugin installs its own layout block after this
-  printf 'onboarding = false\n\n[theme]\nname = "%s"\n\n[ui]\nsidebar_width = 34\n' "$1" > "$(cfg)"
+  printf 'onboarding = false\n\n[theme]\nname = "%s"\n\n[ui]\nsidebar_width = %s\n' "$1" "${SBW:-34}" > "$(cfg)"
 }
 titled() { # <pane> <title> [screen line ...] — set the terminal title (herdr reports it as the task), then print
   local PANE=$1 f; f="$B/home/.demo/$(echo "$1" | tr -c 'A-Za-z0-9\n' _).sh"; mkdir -p "${f%/*}"
@@ -78,15 +78,15 @@ r = json.load(sys.stdin)["result"]; print([p["tab_id"] for p in r.get("panes", r
 sb "herdr tab rename $T_infra plan" >/dev/null
 sleep 1
 
-rep() { sb "herdr pane report-agent $1 --source demo --agent claude --state $2" >/dev/null; }
-rep "$P_web" working            # finishes below, while unseen: done
-rep "$P_api" blocked; rep "$P_auth" working; rep "$P_web2" idle; rep "$P_infra" working
-rep "$P_docs" idle; rep "$P_mobile" idle; rep "$P_data" working; rep "$P_notes" idle
+rep() { sb "herdr pane report-agent $1 --source demo --agent ${3:-claude} --state $2" >/dev/null; }  # [kind]
+rep "$P_web" working codex      # finishes below, while unseen: done
+rep "$P_api" blocked; rep "$P_auth" working; rep "$P_web2" idle; rep "$P_infra" working gemini
+rep "$P_docs" idle; rep "$P_mobile" idle grok; rep "$P_data" working opencode; rep "$P_notes" idle cursor
 W_scratch=$(sb 'hsock workspace.list' | python3 -c 'import json, sys
 print([w["workspace_id"] for w in json.load(sys.stdin)["result"]["workspaces"] if w["label"] == "scratch"][0])')
 sb "herdr workspace focus $W_scratch" >/dev/null
 sb "herdr workspace close w1" >/dev/null 2>&1
-sleep 1; rep "$P_web" idle
+sleep 1; rep "$P_web" idle codex
 until_t 20 all_heads >/dev/null
 
 # believable ages: the daemon keeps "entered this state at" per pane in its memo
