@@ -7,7 +7,7 @@
 #      E2E_ROOT    sandbox root; keep it short, unix sockets must stay < 108 chars (default: /tmp/covr-e2e)
 #      PYTHON      interpreter the sandboxed herdr runs the plugin with, e.g. a python3.8 (default: python3 on PATH)
 # tests: single tokens restart gone sessions disable popup notoml layout
-#        events width seq cap validate hygiene fight reload gitsafe viewed stopstays   (default: all)
+#        events width seq cap validate hygiene fight reload gitsafe viewed stopstays scrollhold   (default: all)
 # Linux and macOS (daemons are attributed to the sandbox by their environment: /proc on Linux, ps -E on macOS).
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -420,7 +420,33 @@ t_stopstays() { # stop (the action or s in the popup) holds: hooks do not start 
   [ -z "$why" ] && ok stopstays || no stopstays "$why"
 }
 
-ALL="single tokens restart gone sessions disable popup notoml layout events width seq cap validate hygiene fight reload gitsafe viewed stopstays"
+t_scrollhold() { # a blocked row is a snapshot: scrolling the pane up keeps it × with the same reason
+  fresh
+  until_t 15 all_heads >/dev/null
+  local p; p=$(cut -d' ' -f1 < "$B/home/panes")
+  wait_of() { sb 'hsock agent.list' | python3 -c 'import json, sys
+print([(a.get("tokens") or {}).get("wait", "") for a in json.load(sys.stdin)["result"]["agents"] if a["pane_id"] == sys.argv[1]][0])' "$1"; }
+  rep() { sb "herdr pane report-agent $p --source e2e --agent claude --state $1" >/dev/null; }
+  scroll() { sb "hsock pane.scroll '{\"pane_id\":\"$p\",\"offset_from_bottom\":$1}'" >/dev/null; }
+  sb "herdr pane run $p 'seq 1 300; echo Bash\\(make deploy\\); echo Do you want to proceed\\?'" >/dev/null; sleep 1
+  rep blocked
+  local why=""
+  until_t 10 eval '[[ "$(head_of "$p")" == "×"* ]]' || why+="never blocked ($(head_of "$p")); "
+  until_t 10 eval '[ "$(wait_of "$p")" = "↳ Bash(make deploy)" ]' || why+="reason is '$(wait_of "$p")'; "
+  local w0; w0=$(wait_of "$p")
+  scroll 120; sleep 0.5
+  rep idle; sleep 3                                               # what herdr says once the prompt is out of view
+  [[ "$(head_of "$p")" == "×"* ]] || why+="scrolled up, the row turned $(head_of "$p"); "
+  [ "$(wait_of "$p")" = "$w0" ] || why+="scrolled up, the reason became '$(wait_of "$p")'; "
+  scroll 0; sleep 0.5; rep blocked; sleep 3                       # back at the bottom: the prompt again
+  [[ "$(head_of "$p")" == "×"* ]] || why+="back at the bottom, the row is $(head_of "$p"); "
+  rep idle                                                        # answered, at the bottom: released (✓, not selected)
+  until_t 10 eval '[[ "$(head_of "$p")" == "✓"* ]]' || why+="answered, the row is $(head_of "$p"); "
+  [ -z "$(wait_of "$p")" ] || why+="answered, the reason stayed; "
+  [ -z "$why" ] && ok scrollhold || no scrollhold "$why"
+}
+
+ALL="single tokens restart gone sessions disable popup notoml layout events width seq cap validate hygiene fight reload gitsafe viewed stopstays scrollhold"
 [ -n "${E2E_LIB:-}" ] && return 0   # sourced for its helpers (tools/screenshots/scene.sh)
 for t in ${*:-$ALL}; do "t_$t"; done
 [ -n "${KEEP:-}" ] || down

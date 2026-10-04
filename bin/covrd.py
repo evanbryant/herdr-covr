@@ -775,9 +775,13 @@ def mark_seen(pane_id, opt, memo, now):
     return True
 
 
+WAIT_FALLBACK = "waiting for you"
+
+
 def wait_reason(pane_id):
+    # "recent" is the bottom of the pane whatever the scroll position ("visible" follows a scrolled-up view)
     try:
-        txt = call("pane.read", {"pane_id": pane_id, "source": "visible", "lines": 40}).get("read", {}).get("text", "")
+        txt = call("pane.read", {"pane_id": pane_id, "source": "recent", "lines": 40}).get("read", {}).get("text", "")
     except Exception:
         try:
             txt = subprocess.run([HERDR, "pane", "read", pane_id], capture_output=True, encoding="utf-8", errors="replace", timeout=5, **NOWIN).stdout
@@ -795,7 +799,15 @@ def wait_reason(pane_id):
                     return reason_text(lines[above[-1]])
             header = question_header(lines, i)
             return reason_text((header + ": " if header else "") + unmark(paragraph(lines, i)))
-    return "waiting for you"
+    return WAIT_FALLBACK
+
+
+def scrolled_up(pane_id):
+    """True while the pane's view is scrolled away from the bottom (False on a herdr without `scroll`)."""
+    try:
+        return (call("pane.get", {"pane_id": pane_id})["pane"].get("scroll") or {}).get("offset_from_bottom", 0) > 0
+    except Exception:
+        return False
 
 
 TAB = r"[☐☒✔]\s+\S.*?"
@@ -871,6 +883,16 @@ def compute(opt, memo):
         if st == "done" and a.get("focused") and mark_seen(pid, opt, memo, now):
             st = "idle"  # the agent you have selected has been finished long enough: it counts as viewed
         rec = seen.get(pid)
+        if rec and rec.get("st") == "blocked" and st in ("idle", "done", "unknown") and scrolled_up(pid):
+            # herdr reads blocked off the screen: scrolled up, the prompt is out of view and the agent looks
+            # idle (done, if not selected). Working is real progress and is never held. Hold the row (its age and its reason) until the pane is back at the bottom.
+            st, seq, rec["held"] = "blocked", rec["seq"], True
+        elif rec and rec.pop("held", False) and st == "blocked":
+            # back at the bottom, the same prompt: herdr counts a new change, we don't
+            snap = memo.get("waits", {}).get(pid)
+            if snap and snap[0] == rec["seq"]:
+                snap[0] = seq
+            rec["seq"] = seq
         if not rec or rec["seq"] != seq:
             # already in this state when we first saw it, or changed while we were away: the start is unknown ...
             rec = seen[pid] = {"seq": seq, "since": None if rec is None or gap else now, "st": st,
@@ -955,6 +977,10 @@ def compute(opt, memo):
         r["vis"] = "stale" if r["stale"] else r["st"]
         dup.setdefault((r["space"], r["tab"], r["vis"]), []).append(r)
 
+    waits = memo.setdefault("waits", {})
+    for pid in list(waits):
+        if not any(r["pid"] == pid and r["st"] == "blocked" for r in rows):
+            waits.pop(pid)
     out = {}
     for r in rows:
         label = r["space"]
@@ -1002,7 +1028,11 @@ def compute(opt, memo):
         if mode == "kind" and r["pid"] in lasts and len(kinds) > 1:
             t["rule"] = "─" * max(1, min(width - 3, TOKEN_MAX))
         if opt["show_task"] != "never" and r["st"] == "blocked":
-            t["wait"] = clip("↳ " + wait_reason(r["pid"]))
+            # read once per prompt, then kept until it is answered (re-read while it is only the fallback)
+            snap = waits.get(r["pid"])
+            if not snap or snap[0] != r["seq"] or snap[1] == WAIT_FALLBACK:
+                snap = waits[r["pid"]] = [r["seq"], wait_reason(r["pid"])]
+            t["wait"] = clip("↳ " + snap[1])
         if opt["show_task"] in ("attention", "all") and r["st"] == "done" and opt["label"] == "space":
             t["done"] = clip("↳ " + (r["title"] or "done"))
         if opt["show_task"] == "all" and r["st"] not in ("blocked", "done") and r["title"] and opt["label"] == "space":

@@ -26,6 +26,7 @@ class FakeHerdr:
 
     def __init__(self, agents, spaces, tabs=()):
         self.agents, self.spaces, self.tabs, self.calls = agents, spaces, list(tabs), []
+        self.screen, self.scroll = "Bash(rm -rf build/)\nDo you want to proceed?\n❯ 1. Yes", {}
 
     def __call__(self, method, params=None):
         self.calls.append((method, params))
@@ -38,7 +39,9 @@ class FakeHerdr:
         if method == "pane.list":
             return {"panes": [{"pane_id": a["pane_id"], "workspace_id": a["workspace_id"], "cwd": None} for a in self.agents]}
         if method == "pane.read":
-            return {"read": {"text": "Bash(rm -rf build/)\nDo you want to proceed?\n❯ 1. Yes"}}
+            return {"read": {"text": self.screen}}
+        if method == "pane.get":
+            return {"pane": {"pane_id": params["pane_id"], "scroll": {"offset_from_bottom": self.scroll.get(params["pane_id"], 0)}}}
         return {}
 
 
@@ -1264,6 +1267,69 @@ class LayoutNoFinalNewline(unittest.TestCase):
                     self.assertEqual(f.read(), orig, repr(orig))
         finally:
             covrd.HERDR_CONFIG, covrd.notify, layout.subprocess.run = saved
+
+class ScrollHold(Base):
+    """A blocked row is a snapshot: scrolling the pane up neither turns it idle nor changes its reason."""
+
+    def test_scrolling_up_holds_the_row_and_its_reason(self):
+        clock, saved = FakeClock(), covrd.time
+        covrd.time = clock
+        try:
+            h = FakeHerdr([agent("p1", "w1", "working", seq=1)], [space("w1", "web", 1)])
+            _, _, _, memo = self.run_compute(h)
+            clock.now += 10
+            h.agents[0].update(agent_status="blocked", state_change_seq=2)
+            out, *_ = self.run_compute(h, memo=memo)
+            self.assertEqual(out["p1"]["wait"], "↳ Bash(rm -rf build/)")
+            reads = sum(1 for m, _ in h.calls if m == "pane.read")
+            # scrolled up: herdr loses the prompt and says idle; the row stays blocked, same reason, same age
+            clock.now += 70
+            h.scroll["p1"], h.screen = 30, "older output\n"
+            h.agents[0].update(agent_status="idle", state_change_seq=3)
+            out, *_ = self.run_compute(h, memo=memo)
+            self.assertTrue(self.text(out["p1"]["head"]).startswith("×"))
+            self.assertTrue(out["p1"]["head"].endswith("1m"))
+            self.assertEqual(out["p1"]["wait"], "↳ Bash(rm -rf build/)")
+            self.assertEqual(sum(1 for m, _ in h.calls if m == "pane.read"), reads)   # the snapshot, not a re-read
+            # back at the bottom: blocked again under a new seq, still the same prompt and age
+            h.scroll["p1"], h.screen = 0, "Bash(rm -rf build/)\nDo you want to proceed?\n❯ 1. Yes"
+            h.agents[0].update(agent_status="blocked", state_change_seq=4)
+            out, *_ = self.run_compute(h, memo=memo)
+            self.assertTrue(out["p1"]["head"].endswith("1m"))
+            self.assertEqual(sum(1 for m, _ in h.calls if m == "pane.read"), reads)
+        finally:
+            covrd.time = saved
+
+    def test_answered_at_the_bottom_is_not_held(self):
+        h = FakeHerdr([agent("p1", "w1", "blocked", seq=1)], [space("w1", "web", 1)])
+        _, _, _, memo = self.run_compute(h)
+        h.agents[0].update(agent_status="idle", state_change_seq=2)
+        out, *_ = self.run_compute(h, memo=memo)
+        self.assertTrue(self.text(out["p1"]["head"]).startswith("○"))
+        self.assertNotIn("wait", out["p1"])
+        self.assertEqual(memo["waits"], {})
+
+    def test_working_while_scrolled_is_not_held(self):
+        h = FakeHerdr([agent("p1", "w1", "blocked", seq=1)], [space("w1", "web", 1)])
+        _, _, _, memo = self.run_compute(h)
+        h.scroll["p1"] = 12
+        h.agents[0].update(agent_status="working", state_change_seq=2)   # answered elsewhere: really moving
+        out, *_ = self.run_compute(h, memo=memo)
+        self.assertTrue(self.text(out["p1"]["head"]).startswith("◐"))
+
+    def test_a_new_prompt_is_read_again(self):
+        h = FakeHerdr([agent("p1", "w1", "blocked", seq=1)], [space("w1", "web", 1)])
+        _, _, _, memo = self.run_compute(h)
+        h.screen = "Which database should we use?\n❯ 1. Postgres"
+        h.agents[0].update(state_change_seq=3)
+        out, *_ = self.run_compute(h, memo=memo)
+        self.assertEqual(out["p1"]["wait"], "↳ Which database should we use?")
+
+    def test_the_reason_reads_the_bottom_of_the_pane(self):
+        h = FakeHerdr([agent("p1", "w1", "blocked", seq=1)], [space("w1", "web", 1)])
+        self.run_compute(h)
+        self.assertEqual({p["source"] for m, p in h.calls if m == "pane.read"}, {"recent"})
+
 
 if __name__ == "__main__":
     unittest.main()

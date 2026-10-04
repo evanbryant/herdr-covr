@@ -89,7 +89,7 @@ herdr plugins can't draw in the sidebar. They can:
 covr's daemon does all three. It runs once per herdr session, updates when herdr reports an event (and every 5 s regardless), and recovers by itself after a herdr restart. It exits when herdr goes away or when you disable the plugin. Details and known limits: [docs/spec.md](docs/spec.md).
 
 **Privacy:**
-- For a blocked agent, covr reads that pane's visible text to show what it is asking.
+- For a blocked agent, covr reads the last lines of that pane once to show what it is asking.
 - Ages come from what covr observes. An agent that was already running when covr started shows no age until its state changes.
 - **Opt-in:** `age_source = "claude-transcripts"` fills those ages in. covr then finds the Claude Code transcript that contains the session title (under `~/.claude*/projects`) and uses the file's modification time. It stores only hashes of those lookups.
 - Nothing leaves your machine.
