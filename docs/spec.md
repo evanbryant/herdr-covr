@@ -1,6 +1,6 @@
 # covr: design and behaviour
 
-This is how covr (plugin id `covr.sidebar`, version 0.6.1) draws herdr's sidebar and how its daemon behaves. The README covers installation and a quick tour.
+This is how covr (plugin id `covr.sidebar`, version 0.6.2) draws herdr's sidebar and how its daemon behaves. The README covers installation and a quick tour.
 
 ## Agents
 
@@ -58,7 +58,7 @@ The agents list uses one herdr Agent view.
 - **Stable ranking:** an agent's rank is set by the moment it entered its current state, so rows move only when a state changes, never as ages tick.
 - **Viewed restarts the timer:** herdr reports a finished agent as `done` until it is viewed, then as `idle`, without counting that as a state change. covr restarts the agent's timer at that moment, however it was viewed, so the idle age and the `stale_after` countdown run from the view, not from the finish.
 - **Selected and finished:** herdr's server marks an agent viewed only on an explicit focus. An agent that finishes while it is already the selected pane (for example with the terminal in the background) can therefore stay `done`. After `seen_after` (default 5 s), covr focuses it where it is, which marks it viewed and moves nothing. The daemon wakes at the due time, not at its next tick.
-- **Blocked is a snapshot:** what a blocked agent is asking is read once, from the bottom of its pane, and kept until the prompt is answered. herdr reads blocked off the screen, so scrolling a blocked pane up hides the prompt and herdr reports the agent idle (or finished). While the pane is scrolled up, covr keeps the row blocked, with its age and its reason; it lets go once the pane is back at the bottom, or at once if the agent starts working. herdr itself still chimes when the prompt comes back into view. On a herdr that does not report a pane's scroll position, the row follows herdr.
+- **Blocked is a snapshot:** what a blocked agent is asking is read once, from the bottom of its pane, and kept until the prompt is answered. herdr reads blocked off the screen, so scrolling a blocked pane up hides the prompt and herdr reports the agent idle (or finished). While the pane is scrolled up, covr keeps the row blocked, with its age and its reason; it lets go once the pane is back at the bottom, or at once if the agent starts working. Scrolled up means herdr's own scrollback, or an agent that scrolls its own fullscreen view: Claude Code with `"tui": "fullscreen"` keeps herdr at the bottom and shows `Jump to bottom (ctrl+End) ↓` near its last row, and covr looks for that. A reason is never read off a view scrolled that way. herdr itself still chimes when the prompt comes back into view. On a herdr that does not report a pane's scroll position, herdr's scrollback is not held.
 - **Age source:** the age is time in the current state, as the daemon observes it; it remembers start times across restarts. An agent already in its state when the daemon first sees it has no age until its state changes, and so has one that changed while the daemon was stopped or down (the moment it changed is unknown). With `age_source = claude-transcripts` (opt-in), the start time of a Claude Code agent is taken from the newest transcript that mentions the session title; a few agents are looked up per tick, so a large session fills in over a few seconds.
 
 ### Grouping

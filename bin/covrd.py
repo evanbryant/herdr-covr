@@ -778,15 +778,28 @@ def mark_seen(pane_id, opt, memo, now):
 WAIT_FALLBACK = "waiting for you"
 
 
-def wait_reason(pane_id):
-    # "recent" is the bottom of the pane whatever the scroll position ("visible" follows a scrolled-up view)
+def read_bottom(pane_id, lines=40):
+    # "recent" is the bottom of the pane whatever herdr's scroll position ("visible" follows a scrolled-up view)
     try:
-        txt = call("pane.read", {"pane_id": pane_id, "source": "recent", "lines": 40}).get("read", {}).get("text", "")
+        return call("pane.read", {"pane_id": pane_id, "source": "recent", "lines": lines}).get("read", {}).get("text", "")
     except Exception:
         try:
-            txt = subprocess.run([HERDR, "pane", "read", pane_id], capture_output=True, encoding="utf-8", errors="replace", timeout=5, **NOWIN).stdout
+            return subprocess.run([HERDR, "pane", "read", pane_id], capture_output=True, encoding="utf-8", errors="replace", timeout=5, **NOWIN).stdout
         except Exception:
-            txt = ""
+            return ""
+
+
+def app_scrolled(txt):
+    """Claude Code's fullscreen view scrolls inside the app (herdr's offset stays 0): scrolled up, it puts
+    `Jump to bottom (ctrl+End) ↓` on its last row, or in the rule above a prompt it only partly hides."""
+    return any("Jump to bottom" in l for l in [l for l in txt.splitlines() if l.strip()][-4:])
+
+
+def wait_reason(pane_id):
+    """The question on screen, the fallback when none is found, or None while the app is scrolled away from it."""
+    txt = read_bottom(pane_id)
+    if app_scrolled(txt):
+        return None
     # blank lines (and box rules, which strip to nothing) stay in as paragraph breaks
     lines = [re.sub(r"[│╭╮╰╯─┃]+", " ", l).strip() for l in txt.splitlines()]
     for i in range(len(lines) - 1, -1, -1):
@@ -803,11 +816,14 @@ def wait_reason(pane_id):
 
 
 def scrolled_up(pane_id):
-    """True while the pane's view is scrolled away from the bottom (False on a herdr without `scroll`)."""
+    """True while the pane's view is scrolled away from the bottom: herdr's own scrollback (a herdr without
+    `scroll` reports none), or an app that scrolls its own fullscreen view."""
     try:
-        return (call("pane.get", {"pane_id": pane_id})["pane"].get("scroll") or {}).get("offset_from_bottom", 0) > 0
+        if (call("pane.get", {"pane_id": pane_id})["pane"].get("scroll") or {}).get("offset_from_bottom", 0) > 0:
+            return True
     except Exception:
-        return False
+        pass
+    return app_scrolled(read_bottom(pane_id, 8))
 
 
 TAB = r"[☐☒✔]\s+\S.*?"
@@ -1031,7 +1047,9 @@ def compute(opt, memo):
             # read once per prompt, then kept until it is answered (re-read while it is only the fallback)
             snap = waits.get(r["pid"])
             if not snap or snap[0] != r["seq"] or snap[1] == WAIT_FALLBACK:
-                snap = waits[r["pid"]] = [r["seq"], wait_reason(r["pid"])]
+                reason = wait_reason(r["pid"])  # None: scrolled away, keep what this prompt already has
+                if reason is not None or not snap or snap[0] != r["seq"]:
+                    snap = waits[r["pid"]] = [r["seq"], reason or WAIT_FALLBACK]
             t["wait"] = clip("↳ " + snap[1])
         if opt["show_task"] in ("attention", "all") and r["st"] == "done" and opt["label"] == "space":
             t["done"] = clip("↳ " + (r["title"] or "done"))

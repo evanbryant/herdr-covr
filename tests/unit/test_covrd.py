@@ -1330,6 +1330,46 @@ class ScrollHold(Base):
         self.run_compute(h)
         self.assertEqual({p["source"] for m, p in h.calls if m == "pane.read"}, {"recent"})
 
+    # Claude Code with "tui": "fullscreen" scrolls inside the app: herdr's offset stays 0 (screens as captured from 2.1.289)
+    APP_UP = "  57\n  58\n  59" + " " * 43 + "Jump to bottom (ctrl+End) ↓\n"
+    APP_PART = ("Which colour do you prefer?\n\n❯ 1. Red\n  2. Green\n  4. Type something.\n"
+                + "─" * 46 + " Jump to bottom (ctrl+End) ↓ " + "─" * 45 + "\n")
+
+    def test_scrolling_inside_the_app_holds_the_row(self):
+        h = FakeHerdr([agent("p1", "w1", "blocked", seq=1)], [space("w1", "web", 1)])
+        _, _, _, memo = self.run_compute(h)
+        h.screen = self.APP_UP
+        h.agents[0].update(agent_status="idle", state_change_seq=2)
+        out, *_ = self.run_compute(h, memo=memo)
+        self.assertTrue(self.text(out["p1"]["head"]).startswith("×"))
+        self.assertEqual(out["p1"]["wait"], "↳ Bash(rm -rf build/)")
+        h.screen = "Bash(rm -rf build/)\nDo you want to proceed?\n❯ 1. Yes"     # ctrl+End: the prompt again
+        h.agents[0].update(agent_status="blocked", state_change_seq=3)
+        out, *_ = self.run_compute(h, memo=memo)
+        self.assertEqual(out["p1"]["wait"], "↳ Bash(rm -rf build/)")
+        h.screen = "Interrupted · What should Claude do instead?\n❯ "              # Esc: answered, at the bottom
+        h.agents[0].update(agent_status="idle", state_change_seq=4)
+        out, *_ = self.run_compute(h, memo=memo)
+        self.assertTrue(self.text(out["p1"]["head"]).startswith("○"))
+
+    def test_a_scrolled_read_never_becomes_the_reason(self):
+        h = FakeHerdr([agent("p1", "w1", "blocked", seq=1)], [space("w1", "web", 1)])
+        h.screen = self.APP_PART                       # first seen while scrolled: the fallback, read again later
+        out, _, _, memo = self.run_compute(h)
+        self.assertEqual(out["p1"]["wait"], "↳ " + covrd.WAIT_FALLBACK)
+        h.screen = "Bash(rm -rf build/)\nDo you want to proceed?\n❯ 1. Yes"
+        out, *_ = self.run_compute(h, memo=memo)
+        self.assertEqual(out["p1"]["wait"], "↳ Bash(rm -rf build/)")
+        h.screen = self.APP_PART                       # partly scrolled: herdr loses the prompt
+        h.agents[0].update(agent_status="idle", state_change_seq=2)
+        out, *_ = self.run_compute(h, memo=memo)
+        self.assertTrue(self.text(out["p1"]["head"]).startswith("×"))
+        self.assertEqual(out["p1"]["wait"], "↳ Bash(rm -rf build/)")
+
+    def test_the_marker_only_counts_at_the_bottom(self):
+        self.assertTrue(covrd.app_scrolled(self.APP_UP + "\n\n"))
+        self.assertFalse(covrd.app_scrolled("Jump to bottom (ctrl+End) ↓\n" + "line\n" * 6))
+
 
 if __name__ == "__main__":
     unittest.main()

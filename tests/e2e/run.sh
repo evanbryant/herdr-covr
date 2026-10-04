@@ -7,7 +7,7 @@
 #      E2E_ROOT    sandbox root; keep it short, unix sockets must stay < 108 chars (default: /tmp/covr-e2e)
 #      PYTHON      interpreter the sandboxed herdr runs the plugin with, e.g. a python3.8 (default: python3 on PATH)
 # tests: single tokens restart gone sessions disable popup notoml layout
-#        events width seq cap validate hygiene fight reload gitsafe viewed stopstays scrollhold   (default: all)
+#        events width seq cap validate hygiene fight reload gitsafe viewed stopstays scrollhold appscroll   (default: all)
 # Linux and macOS (daemons are attributed to the sandbox by their environment: /proc on Linux, ps -E on macOS).
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -446,7 +446,28 @@ print([(a.get("tokens") or {}).get("wait", "") for a in json.load(sys.stdin)["re
   [ -z "$why" ] && ok scrollhold || no scrollhold "$why"
 }
 
-ALL="single tokens restart gone sessions disable popup notoml layout events width seq cap validate hygiene fight reload gitsafe viewed stopstays scrollhold"
+t_appscroll() { # Claude Code's fullscreen view scrolls inside the app (herdr's offset stays 0): its marker holds the row
+  fresh
+  until_t 15 all_heads >/dev/null
+  local p; p=$(cut -d' ' -f1 < "$B/home/panes")
+  wait_of() { sb 'hsock agent.list' | python3 -c 'import json, sys
+print([(a.get("tokens") or {}).get("wait", "") for a in json.load(sys.stdin)["result"]["agents"] if a["pane_id"] == sys.argv[1]][0])' "$1"; }
+  rep() { sb "herdr pane report-agent $p --source e2e --agent claude --state $1" >/dev/null; }
+  sb "herdr pane run $p 'clear; echo Bash\\(make deploy\\); echo Do you want to proceed\\?'" >/dev/null; sleep 1
+  rep blocked
+  local why=""
+  until_t 10 eval '[ "$(wait_of "$p")" = "↳ Bash(make deploy)" ]' || why+="reason is '$(wait_of "$p")'; "
+  sb "herdr pane run $p 'clear; seq 1 20; echo \"   Jump to bottom (ctrl+End) ↓\"'" >/dev/null; sleep 1
+  rep idle; sleep 3                                               # scrolled inside the app: herdr says idle
+  [[ "$(head_of "$p")" == "×"* ]] || why+="scrolled in the app, the row turned $(head_of "$p"); "
+  [ "$(wait_of "$p")" = "↳ Bash(make deploy)" ] || why+="scrolled in the app, the reason became '$(wait_of "$p")'; "
+  sb "herdr pane run $p 'clear; echo Bash\\(make deploy\\); echo Do you want to proceed\\?'" >/dev/null; sleep 1
+  rep blocked; sleep 3; rep idle                                  # back at the bottom, then answered: released
+  until_t 10 eval '[[ "$(head_of "$p")" == "✓"* ]]' || why+="answered, the row is $(head_of "$p"); "
+  [ -z "$why" ] && ok appscroll || no appscroll "$why"
+}
+
+ALL="single tokens restart gone sessions disable popup notoml layout events width seq cap validate hygiene fight reload gitsafe viewed stopstays scrollhold appscroll"
 [ -n "${E2E_LIB:-}" ] && return 0   # sourced for its helpers (tools/screenshots/scene.sh)
 for t in ${*:-$ALL}; do "t_$t"; done
 [ -n "${KEEP:-}" ] || down
