@@ -248,6 +248,7 @@ t_rows() {    # G7b: your rows from rows.toml join the layout, herdr accepts it,
 agents = [
   [{ token = "$bar", fg = "#4c4f69", rules = [{ starts_with = "\u200b", fg = "#df8e1d" }] }, { token = "$track", fg = "#9ca0b0" }],
 ]
+agent_line = { tokens = [{ token = "$flag", fg = "#d20f39" }], width = 1 }
 EOF
   act install-layout
   local why="" p
@@ -256,6 +257,9 @@ EOF
   p=$(sb 'herdr agent list' | sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p' | head -1)
   sb "herdr pane report-metadata $p --source e2e --token 'bar=━━━━━━' --token 'track=· · ·'" >/dev/null
   until_t 10 eval '$TM capture-pane -t t:0 -p | grep -q "━━━━━━ · · · ·"' || why+="the row's tokens are not drawn; "
+  grep -q 'token = "$flag"' "$(cfg)" || why+="agent_line token not installed; "
+  sb "herdr pane report-metadata $p --source e2e --token 'flag=!'" >/dev/null   # covr left it room: drawn whole
+  until_t 10 eval '$TM capture-pane -t t:0 -p | grep -qE " · !( |│|$)"' || why+="the agent_line token is not drawn at the end of the line; "
   act install-layout
   grep -q 'token = "$bar"' "$(cfg)" || why+="a reinstall dropped the row; "
   act uninstall-layout

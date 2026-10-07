@@ -53,6 +53,8 @@ herdr plugin action invoke covr.sidebar.install-layout
     [{ token = "$build", fg = "#9ca0b0" }],
   ]
   spaces = []
+  # a token at the end of each agent's own line; covr shortens its line by `width` (+3 for herdr's " · ") to fit it
+  agent_line = { tokens = [{ token = "$flag", fg = "#d20f39", bold = true }], width = 2 }
   ```
 - **Undo:** `uninstall-layout` removes the block, byte for byte.
 - **Upgrades:** run `install-layout` again after updating covr, so the block's colours match the current glyphs and icons.

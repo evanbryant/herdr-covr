@@ -29,6 +29,7 @@ NO_EOL = " (config had no final newline)"
 THEME_CUSTOM = re.compile(r"^[ \t]*\[[ \t]*theme\.custom[ \t]*\]", re.M)
 ROWS = os.path.join(covrd.CFG_DIR, "rows.toml")
 SECTIONS = ("spaces", "agents")
+LINE_MAX = covrd.LINE_MAX  # cells agent_line may reserve
 MAX_ROWS = MAX_TOKENS = 16  # herdr: at most 16 rows per layout and 16 tokens per row
 BARE = re.compile(r"[A-Za-z0-9_-]+")
 
@@ -58,9 +59,9 @@ def extra_rows(path=None):
         data = covrd.tomllib.loads(text)
     except Exception as e:
         raise ValueError(f"rows.toml is not valid TOML ({e})")
-    unknown = sorted(set(data) - set(SECTIONS))
+    unknown = sorted(set(data) - set(SECTIONS) - {"agent_line"})
     if unknown:
-        raise ValueError(f"rows.toml: unknown key '{unknown[0]}' (only spaces and agents)")
+        raise ValueError(f"rows.toml: unknown key '{unknown[0]}' (only spaces, agents and agent_line)")
     out = {}
     for sec in SECTIONS:
         rows = data.get(sec, [])
@@ -73,6 +74,15 @@ def extra_rows(path=None):
                 raise ValueError(f'rows.toml: each {sec} token is a name or {{ token = "..." }}')
         if rows:
             out[sec] = rows
+    line = data.get("agent_line")
+    if line is not None:
+        toks, w = (line.get("tokens"), line.get("width")) if isinstance(line, dict) else (None, None)
+        if (set(line) - {"tokens", "width"} if isinstance(line, dict) else True) or not isinstance(toks, list) or not toks \
+                or not all(isinstance(t, str) or (isinstance(t, dict) and isinstance(t.get("token"), str)) for t in toks):
+            raise ValueError('rows.toml: agent_line is { tokens = [...], width = N }, tokens a non-empty list of names or { token = "..." }')
+        if not isinstance(w, int) or isinstance(w, bool) or not 1 <= w <= LINE_MAX:
+            raise ValueError(f"rows.toml: agent_line width is the cells your tokens show at most, 1 to {LINE_MAX}")
+        out["agent_line"] = toks
     return out
 
 
@@ -99,7 +109,8 @@ def toml(v):
 
 def with_rows(block, rows):
     """The template block with your rows added to each section (no rows: unchanged): after covr's space row, and
-    after an agent's own rows but before the rule that closes its group, so they stay with that agent."""
+    after an agent's own rows but before the rule that closes its group, so they stay with that agent; agent_line
+    tokens go at the end of each agent's first line."""
     if not rows:
         return block
     own = covrd.tomllib.loads(block)["ui"]["sidebar"] if covrd.tomllib else {}
@@ -108,6 +119,13 @@ def with_rows(block, rows):
         if n + len(rows.get(sec, [])) > MAX_ROWS:
             raise ValueError(f"rows.toml: covr uses {n} {sec} rows and herdr allows {MAX_ROWS}, "
                              f"so at most {MAX_ROWS - n} of yours")
+    if rows.get("agent_line"):
+        first = len(own["agents"]["rows"][0]) if own else 3
+        if first + len(rows["agent_line"]) > MAX_TOKENS:
+            raise ValueError(f"rows.toml: covr's agent line has {first} tokens and herdr allows {MAX_TOKENS}, "
+                             f"so agent_line takes at most {MAX_TOKENS - first}")
+        i = block.index("\n   ],\n") + 1  # the first agents row closes with "   ]," on its own line
+        block = block[:i] + "".join(f"   {toml(t)},\n" for t in rows["agent_line"]) + block[i:]
     lines = lambda sec: "".join(f"  {toml(r)},\n" for r in rows.get(sec, []))  # noqa: E731
     if rows.get("spaces"):  # the template's spaces rows are one row closed by "]]"
         i = block.index("]]\n")

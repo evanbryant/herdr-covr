@@ -873,6 +873,33 @@ class ExtraRows(LayoutBase):
         self.assertEqual(self.read(), self.ORIG)
         self.assertIn("Python 3.11", self.notes[-1])
 
+    LINE = ('agent_line = { tokens = [{ token = "$flag", fg = "#d20f39", bold = true }], width = 2 }\n')
+
+    def test_agent_line_tokens_end_covr_agent_line(self):
+        self.needs_tomllib()
+        self.rows_file(self.LINE)
+        self.write(self.ORIG)
+        self.assertEqual(layout.install(), 0)
+        first = self.parsed()["agents"]["rows"][0]
+        self.assertEqual([t["token"] for t in first], ["$icon", "$head", "$icon_r", "$flag"])
+        self.assertEqual(first[-1], {"token": "$flag", "fg": "#d20f39", "bold": True})
+        self.assertEqual(len(self.parsed()["agents"]["rows"]), 5)  # no extra rows
+        self.assertEqual(layout.uninstall(), 0)
+        self.assertEqual(self.read(), self.ORIG)
+
+    def test_bad_agent_line_is_refused(self):
+        self.needs_tomllib()
+        for text, why in (("agent_line = []", "agent_line is"), ("agent_line = { tokens = [] , width = 1 }", "agent_line is"),
+                          ('agent_line = { tokens = ["$f"] }', "width is"),
+                          ('agent_line = { tokens = ["$f"], width = 99 }', "width is"),
+                          ('agent_line = { tokens = ["$f"], width = 1, colour = 2 }', "agent_line is"),
+                          ('agent_line = { tokens = [' + ", ".join(['"$t"'] * 14) + '], width = 1 }', "at most 13")):
+            self.rows_file(text)
+            self.write(self.ORIG)
+            self.assertEqual(layout.install(), 1, text)
+            self.assertEqual(self.read(), self.ORIG, text)
+            self.assertIn(why, self.notes[-1], text)
+
     def test_strings_round_trip(self):
         self.needs_tomllib()
         import tomllib
@@ -1471,6 +1498,40 @@ class ScrollHold(Base):
         self.assertTrue(covrd.app_scrolled(self.APP_UP + "\n\n"))
         self.assertFalse(covrd.app_scrolled("Jump to bottom (ctrl+End) ↓\n" + "line\n" * 6))
 
+
+
+
+class AgentLine(Base):
+    """rows.toml's agent_line: covr's line gets shorter by the cells the tokens need, plus herdr's " · " each."""
+    def setUp(self):
+        super().setUp()
+        self.saved_rows, covrd.ROWS = covrd.ROWS, os.path.join(_TMP, "rows-line.toml")
+
+    def tearDown(self):
+        if os.path.exists(covrd.ROWS):
+            os.remove(covrd.ROWS)
+        covrd.ROWS = self.saved_rows
+        super().tearDown()
+
+    def test_line_leaves_room_for_your_tokens(self):
+        if covrd.tomllib is None:
+            self.skipTest("needs tomllib (Python 3.11+)")
+        h = FakeHerdr([agent("p1", "w1", "idle", kind="claude")], [space("w1", "web", 1)])
+        memo = lambda: {"since": {"p1": {"seq": 1, "since": time.time() - 300, "st": "idle"}}}  # noqa: E731 (an age: padded)
+        before, *_ = self.run_compute(h, opt=opts(kind_icon="right"), memo=memo())
+        with open(covrd.ROWS, "w") as f:
+            f.write('agent_line = { tokens = ["$flag"], width = 2 }\n')
+        self.assertEqual(covrd.line_reserve(), 5)
+        after, *_ = self.run_compute(h, opt=opts(kind_icon="right"), memo=memo())
+        self.assertTrue(after["p1"]["head"].endswith(" 5m"))
+        self.assertEqual(covrd.cells(before["p1"]["head"]) - covrd.cells(after["p1"]["head"]), 5)
+
+    def test_no_or_broken_file_reserves_nothing(self):
+        self.assertEqual(covrd.line_reserve(), 0)
+        for text in ("agent_line = [", 'agent_line = { tokens = ["$f"], width = 0 }', "agents = []"):
+            with open(covrd.ROWS, "w") as f:
+                f.write(text)
+            self.assertEqual(covrd.line_reserve(), 0, text)
 
 if __name__ == "__main__":
     unittest.main()
