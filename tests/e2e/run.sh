@@ -6,7 +6,7 @@
 #      PLUGIN_DIR  plugin under test (default: the repo root)
 #      E2E_ROOT    sandbox root; keep it short, unix sockets must stay < 108 chars (default: /tmp/covr-e2e)
 #      PYTHON      interpreter the sandboxed herdr runs the plugin with, e.g. a python3.8 (default: python3 on PATH)
-# tests: single tokens restart gone sessions disable popup notoml layout
+# tests: single tokens restart gone sessions disable popup notoml layout rows
 #        events width seq cap validate hygiene fight reload gitsafe viewed stopstays scrollhold appscroll   (default: all)
 # Linux and macOS (daemons are attributed to the sandbox by their environment: /proc on Linux, ps -E on macOS).
 set -u
@@ -239,6 +239,30 @@ EOF
   [ -z "$why" ] && ok layout || no layout "$why"
 }
 
+t_rows() {    # G7b: your rows from rows.toml join the layout, herdr accepts it, and their tokens render
+  fresh
+  local cdir="$B/home/.config/herdr/plugins/config/covr.sidebar"
+  mkdir -p "$cdir"
+  cat > "$cdir/rows.toml" <<'EOF'
+# a bar under each agent, fed by another plugin
+agents = [
+  [{ token = "$bar", fg = "#4c4f69", rules = [{ starts_with = "\u200b", fg = "#df8e1d" }] }, { token = "$track", fg = "#9ca0b0" }],
+]
+EOF
+  act install-layout
+  local why="" p
+  grep -q 'token = "$bar"' "$(cfg)" || why+="row not installed; "
+  python3 -c 'import sys, tomllib; tomllib.load(open(sys.argv[1], "rb"))' "$(cfg)" 2>/dev/null || why+="result is not valid TOML; "
+  p=$(sb 'herdr agent list' | sed -n 's/.*"pane_id":"\([^"]*\)".*/\1/p' | head -1)
+  sb "herdr pane report-metadata $p --source e2e --token 'bar=━━━━━━' --token 'track=· · ·'" >/dev/null
+  until_t 10 eval '$TM capture-pane -t t:0 -p | grep -q "━━━━━━ · · · ·"' || why+="the row's tokens are not drawn; "
+  act install-layout
+  grep -q 'token = "$bar"' "$(cfg)" || why+="a reinstall dropped the row; "
+  act uninstall-layout
+  grep -q 'token = "$bar"' "$(cfg)" && why+="uninstall left the row; "
+  [ -z "$why" ] && ok rows || no rows "$why"
+}
+
 # ---------------------------------------------------------------- hardening (0.3)
 run_dir() { ls -d "$B"/home/.local/state/herdr/plugins/covr.sidebar/s/*/ 2>/dev/null | head -1; }
 opt() { # <key> <value> — through the plugin's own CLI, like the actions do
@@ -467,7 +491,7 @@ print([(a.get("tokens") or {}).get("wait", "") for a in json.load(sys.stdin)["re
   [ -z "$why" ] && ok appscroll || no appscroll "$why"
 }
 
-ALL="single tokens restart gone sessions disable popup notoml layout events width seq cap validate hygiene fight reload gitsafe viewed stopstays scrollhold appscroll"
+ALL="single tokens restart gone sessions disable popup notoml layout rows events width seq cap validate hygiene fight reload gitsafe viewed stopstays scrollhold appscroll"
 [ -n "${E2E_LIB:-}" ] && return 0   # sourced for its helpers (tools/screenshots/scene.sh)
 for t in ${*:-$ALL}; do "t_$t"; done
 [ -n "${KEEP:-}" ] || down

@@ -7,10 +7,11 @@ The layout is one marked block (`# >>> covr.sidebar layout` … `# <<< covr.side
 opening line other than the keys block counts, so blocks written by older versions are found too.
 Everything outside it, including a `covr.sidebar keys` block, is left byte-for-byte alone.
 Install replaces the block in place (idempotent) or appends it; uninstall removes exactly what
-install appended. Nothing is written when the result would be a config herdr rejects, and a
+install appended. Your own rows (for tokens other plugins report) live in rows.toml in covr's plugin config
+dir and are appended after covr's rows on every install, so a reinstall keeps them. Nothing is written when the result would be a config herdr rejects, and a
 failed `herdr server reload-config` puts the old file back.
 """
-import os, re, subprocess, sys
+import os, re, subprocess, sys, unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import covrd  # noqa: E402
@@ -26,6 +27,10 @@ OURS = re.compile(r"^[ \t]*\[[ \t]*ui\.sidebar\.(spaces|agents)[ \t]*\]", re.M)
 # uninstall takes that newline back out too
 NO_EOL = " (config had no final newline)"
 THEME_CUSTOM = re.compile(r"^[ \t]*\[[ \t]*theme\.custom[ \t]*\]", re.M)
+ROWS = os.path.join(covrd.CFG_DIR, "rows.toml")
+SECTIONS = ("spaces", "agents")
+MAX_ROWS = MAX_TOKENS = 16  # herdr: at most 16 rows per layout and 16 tokens per row
+BARE = re.compile(r"[A-Za-z0-9_-]+")
 
 
 def variant(text):
@@ -41,13 +46,86 @@ def theme_name(text):
     return covrd.herdr_config_value("theme", "name", text)
 
 
+def extra_rows(path=None):
+    """Your own rows from rows.toml: {"spaces": [...], "agents": [...]}, only the sections that have rows.
+    ValueError says what is wrong; a missing or empty file is no rows."""
+    text = covrd.read_text(path or ROWS, "")
+    if not any(ln.strip() and not ln.lstrip().startswith("#") for ln in text.splitlines()):
+        return {}  # missing, empty or only comments: no rows (and no TOML parser needed)
+    if covrd.tomllib is None:
+        raise ValueError("rows.toml needs Python 3.11 or newer (tomllib) to read")
+    try:
+        data = covrd.tomllib.loads(text)
+    except Exception as e:
+        raise ValueError(f"rows.toml is not valid TOML ({e})")
+    unknown = sorted(set(data) - set(SECTIONS))
+    if unknown:
+        raise ValueError(f"rows.toml: unknown key '{unknown[0]}' (only spaces and agents)")
+    out = {}
+    for sec in SECTIONS:
+        rows = data.get(sec, [])
+        if not isinstance(rows, list) or not all(isinstance(r, list) and r for r in rows):
+            raise ValueError(f"rows.toml: {sec} must be a list of rows, each a non-empty list of tokens")
+        for r in rows:
+            if len(r) > MAX_TOKENS:
+                raise ValueError(f"rows.toml: a {sec} row has {len(r)} tokens; herdr allows {MAX_TOKENS}")
+            if not all(isinstance(t, str) or (isinstance(t, dict) and isinstance(t.get("token"), str)) for t in r):
+                raise ValueError(f'rows.toml: each {sec} token is a name or {{ token = "..." }}')
+        if rows:
+            out[sec] = rows
+    return out
+
+
+def toml(v):
+    """One TOML value on one line (the subset rows use): strings, numbers, booleans, arrays, inline tables."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    if isinstance(v, list):
+        return "[" + ", ".join(toml(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return "{ " + ", ".join(f"{k if BARE.fullmatch(k) else toml(k)} = {toml(x)}" for k, x in v.items()) + " }" if v else "{}"
+    out = []
+    for c in str(v):
+        if c in '"\\':
+            out.append("\\" + c)
+        elif unicodedata.category(c)[0] == "C" or c in "\u2028\u2029":  # control and invisible format characters
+            out.append("\\u%04x" % ord(c) if ord(c) <= 0xFFFF else "\\U%08x" % ord(c))
+        else:
+            out.append(c)
+    return '"' + "".join(out) + '"'
+
+
+def with_rows(block, rows):
+    """The template block with your rows appended after covr's own in each section (no rows: unchanged)."""
+    if not rows:
+        return block
+    own = covrd.tomllib.loads(block)["ui"]["sidebar"] if covrd.tomllib else {}
+    for sec in SECTIONS:
+        n = len(own.get(sec, {}).get("rows", []))
+        if n + len(rows.get(sec, [])) > MAX_ROWS:
+            raise ValueError(f"rows.toml: covr uses {n} {sec} rows and herdr allows {MAX_ROWS}, "
+                             f"so at most {MAX_ROWS - n} of yours")
+    lines = lambda sec: "".join(f"  {toml(r)},\n" for r in rows.get(sec, []))  # noqa: E731
+    if rows.get("spaces"):  # the template's spaces rows are one row closed by "]]"
+        i = block.index("]]\n")
+        block = block[:i + 1] + ",\n" + lines("spaces") + block[i + 1:]
+    if rows.get("agents"):  # the agents rows array closes last, with "]" on its own line
+        i = block.rindex("\n]\n") + 1
+        block = block[:i] + lines("agents") + block[i:]
+    return block
+
+
 def block_for(text):
-    """The layout block for this config: drop our [theme.custom] tweak if the user has their own table."""
+    """The layout block for this config: drop our [theme.custom] tweak if the user has their own table, then
+    append your rows from rows.toml (ValueError when they are invalid or too many)."""
     v = variant(text)
     block = covrd.read_text(os.path.join(LAYOUTS, "latte.toml" if v == "light" else "mocha.toml"))
     if THEME_CUSTOM.search(text):
         block = re.sub(r"^\[theme\.custom\]\n(?:[^\[\n][^\n]*\n)*\n?", "", block, flags=re.M)
     block = block if block.endswith("\n") else block + "\n"
+    block = with_rows(block, extra_rows())
     if text.count("\r\n") * 2 > text.count("\n"):
         block = block.replace("\r\n", "\n").replace("\n", "\r\n")  # match a CRLF config
     return block, v
@@ -86,7 +164,11 @@ def install():
         covrd.notify("not installed: config.toml already defines [ui.sidebar.agents] / [ui.sidebar.spaces] "
                      "outside the covr block; remove those tables, then retry")
         return 1
-    block, v = block_for(outside)
+    try:
+        block, v = block_for(outside)
+    except ValueError as e:
+        covrd.notify(f"not installed: {e} (config.toml left unchanged)")
+        return 1
     mark = lambda b: b.replace(" layout", " layout" + NO_EOL, 1)
     if m:
         if NO_EOL in m.group(0).splitlines()[0]:
@@ -140,4 +222,9 @@ if __name__ == "__main__":
         sys.exit(uninstall())
     else:
         text = covrd.read_text(covrd.HERDR_CONFIG, "")
-        print(("installed" if BLOCK.search(text) else "not installed"), "·", covrd.HERDR_CONFIG, "·", variant(text))
+        try:
+            mine = ", ".join(f"{len(r)} {sec}" for sec, r in extra_rows().items()) or "none"
+        except ValueError as e:
+            mine = str(e)
+        print(("installed" if BLOCK.search(text) else "not installed"), "·", covrd.HERDR_CONFIG, "·", variant(text),
+              "· your rows:", mine)

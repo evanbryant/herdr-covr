@@ -719,7 +719,7 @@ class Spaces(Base):
             covrd.log_once = saved_log_once
 
 
-class LayoutFile(unittest.TestCase):
+class LayoutBase(unittest.TestCase):
     def setUp(self):
         import subprocess
         self.cfg = os.path.join(_TMP, "herdr-config.toml")
@@ -741,6 +741,9 @@ class LayoutFile(unittest.TestCase):
 
     ORIG = ('[theme]\nname = "catppuccin-latte"\n\n# >>> covr.sidebar keys\n[[keys.command]]\nkey = "prefix+a"\n'
             'type = "plugin_action"\ncommand = "covr.sidebar.cycle-view"\n# <<< covr.sidebar keys\n')
+
+
+class LayoutFile(LayoutBase):
 
     def test_install_is_idempotent_and_uninstall_restores_bytes(self):
         self.write(self.ORIG)
@@ -779,6 +782,103 @@ class LayoutFile(unittest.TestCase):
         self.assertFalse(layout.BLOCK.search(self.ORIG))  # the keys block is not ours
         old = blk.replace("# >>> covr.sidebar layout", "# >>> covr.sidebar (older name) — herdr sidebar layout", 1)
         self.assertTrue(layout.BLOCK.search("a = 1\n\n" + old))  # blocks from older versions are still found
+
+
+class ExtraRows(LayoutBase):
+    """rows.toml: your own rows, appended after covr's on every install (reading it needs tomllib, 3.11+)."""
+    BAR = ('agents = [\n  [{ token = "$bar", fg = "#4c4f69", rules = [\n'
+           '      { starts_with = "\\u200b", fg = "#df8e1d" } ] },\n   { token = "$track", fg = "#9ca0b0" }],\n]\n'
+           'spaces = [["$owner"]]\n')
+
+    def setUp(self):
+        super().setUp()
+        self.rows = os.path.join(_TMP, "rows.toml")
+        self.saved_rows, layout.ROWS = layout.ROWS, self.rows
+        self.notes = []
+        covrd.notify = self.notes.append
+        if os.path.exists(self.rows):
+            os.remove(self.rows)
+
+    def tearDown(self):
+        layout.ROWS = self.saved_rows
+        super().tearDown()
+
+    def needs_tomllib(self):
+        if covrd.tomllib is None:
+            self.skipTest("needs tomllib (Python 3.11+)")
+
+    def rows_file(self, text):
+        with open(self.rows, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def parsed(self):
+        import tomllib
+        return tomllib.loads(self.read())["ui"]["sidebar"]
+
+    def test_no_rows_file_installs_the_template_unchanged(self):
+        self.write(self.ORIG)
+        self.assertEqual(layout.install(), 0)
+        with open(os.path.join(layout.LAYOUTS, "latte.toml"), encoding="utf-8") as f:
+            self.assertIn(f.read(), self.read())
+        self.rows_file("# nothing yet\n")
+        self.assertEqual(layout.install(), 0)
+        self.assertEqual(self.notes[-1], "layout already installed (light)")
+
+    def test_rows_are_appended_kept_on_reinstall_and_removed_on_uninstall(self):
+        self.needs_tomllib()
+        self.rows_file(self.BAR)
+        self.write(self.ORIG)
+        self.assertEqual(layout.install(), 0)
+        sb = self.parsed()
+        self.assertEqual(sb["agents"]["rows"][-1], [{"token": "$bar", "fg": "#4c4f69", "rules": [
+            {"starts_with": "\u200b", "fg": "#df8e1d"}]}, {"token": "$track", "fg": "#9ca0b0"}])
+        self.assertEqual(len(sb["agents"]["rows"]), 6)
+        self.assertEqual(sb["spaces"]["rows"][-1], ["$owner"])
+        self.assertEqual(sb["agents"]["rows"][0][0]["token"], "$icon")  # covr's rows come first
+        self.assertIn('"\\u200b"', self.read())  # invisible characters stay visible as escapes
+        once = self.read()
+        self.assertEqual(layout.install(), 0)
+        self.assertEqual(self.read(), once)
+        self.assertEqual(layout.uninstall(), 0)
+        self.assertEqual(self.read(), self.ORIG)
+
+    def test_dark_template_takes_rows_too(self):
+        self.needs_tomllib()
+        self.rows_file(self.BAR)
+        self.write(self.ORIG.replace("catppuccin-latte", "tokyo-night"))
+        self.assertEqual(layout.install(), 0)
+        self.assertEqual(self.parsed()["agents"]["rows"][-1][1], {"token": "$track", "fg": "#9ca0b0"})
+
+    def test_bad_rows_are_refused_and_nothing_is_written(self):
+        self.needs_tomllib()
+        for text, why in (("agents = [", "not valid TOML"), ("colours = []", "unknown key"),
+                          ('agents = ["$x"]', "list of rows"), ("agents = [[1]]", "a name or"),
+                          ("agents = [[" + ", ".join(['"$t"'] * 17) + "]]", "herdr allows 16"),
+                          ("agents = [" + '["$t"], ' * 12 + "]", "at most 11")):
+            self.rows_file(text)
+            self.write(self.ORIG)
+            self.assertEqual(layout.install(), 1, text)
+            self.assertEqual(self.read(), self.ORIG, text)
+            self.assertIn(why, self.notes[-1], text)
+
+    def test_old_python_refuses_rows_with_a_reason(self):
+        self.rows_file(self.BAR)
+        self.write(self.ORIG)
+        saved, covrd.tomllib = covrd.tomllib, None
+        try:
+            self.assertEqual(layout.install(), 1)
+        finally:
+            covrd.tomllib = saved
+        self.assertEqual(self.read(), self.ORIG)
+        self.assertIn("Python 3.11", self.notes[-1])
+
+    def test_strings_round_trip(self):
+        self.needs_tomllib()
+        import tomllib
+        for v in ['a"b\\c', "\u200b\u200b━", "tab\there", "\U000e0001", "é ✻ ·"]:
+            self.assertEqual(tomllib.loads("x = " + layout.toml(v))["x"], v)
+        self.assertEqual(tomllib.loads("x = " + layout.toml({"odd key": True, "n": 1.5, "l": []}))["x"],
+                         {"odd key": True, "n": 1.5, "l": []})
 
 
 class Contract(unittest.TestCase):
