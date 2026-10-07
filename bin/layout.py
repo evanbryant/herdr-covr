@@ -98,7 +98,8 @@ def toml(v):
 
 
 def with_rows(block, rows):
-    """The template block with your rows appended after covr's own in each section (no rows: unchanged)."""
+    """The template block with your rows added to each section (no rows: unchanged): after covr's space row, and
+    after an agent's own rows but before the rule that closes its group, so they stay with that agent."""
     if not rows:
         return block
     own = covrd.tomllib.loads(block)["ui"]["sidebar"] if covrd.tomllib else {}
@@ -111,8 +112,9 @@ def with_rows(block, rows):
     if rows.get("spaces"):  # the template's spaces rows are one row closed by "]]"
         i = block.index("]]\n")
         block = block[:i + 1] + ",\n" + lines("spaces") + block[i + 1:]
-    if rows.get("agents"):  # the agents rows array closes last, with "]" on its own line
-        i = block.rindex("\n]\n") + 1
+    if rows.get("agents"):  # before the group rule's row, else before the "]" that closes the agents rows
+        j = block.find('\n  [{ token = "$rule"')
+        i = (j if j >= 0 else block.rindex("\n]\n")) + 1
         block = block[:i] + lines("agents") + block[i:]
     return block
 

@@ -46,7 +46,7 @@ herdr plugin action invoke covr.sidebar.install-layout
 `install-layout` adds one marked block to herdr's `config.toml` and reloads it:
 - **Colours** follow your `[theme] name`: latte colours for light themes (`kanagawa-lotus`, `rose-pine-dawn` and the other light ones), mocha for the rest. Set `layout` to `light` or `dark` to override.
 - **Conflicts:** if you already define `[ui.sidebar.spaces]` or `[ui.sidebar.agents]`, it writes nothing and says why.
-- **Your own rows:** to show tokens from other plugins (or your own scripts), put rows in `rows.toml` in covr's config dir (`herdr plugin config-dir covr.sidebar`). It uses herdr's row syntax, and `install-layout` appends the rows after covr's own, so a reinstall keeps them. A row whose tokens are all empty takes no space. herdr allows 16 rows per section; covr uses 5 agent rows and 1 space row.
+- **Your own rows:** to show tokens from other plugins (or your own scripts), put rows in `rows.toml` in covr's config dir (`herdr plugin config-dir covr.sidebar`). It uses herdr's row syntax, and `install-layout` adds the rows after covr's own (agent rows go above the rule that closes a kind group, so they stay with their agent); a reinstall keeps them. A row whose tokens are all empty takes no space. herdr allows 16 rows per section; covr uses 5 agent rows and 1 space row.
 
   ```toml
   agents = [

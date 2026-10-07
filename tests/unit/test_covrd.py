@@ -785,7 +785,7 @@ class LayoutFile(LayoutBase):
 
 
 class ExtraRows(LayoutBase):
-    """rows.toml: your own rows, appended after covr's on every install (reading it needs tomllib, 3.11+)."""
+    """rows.toml: your own rows, added to covr's on every install (reading it needs tomllib, 3.11+)."""
     BAR = ('agents = [\n  [{ token = "$bar", fg = "#4c4f69", rules = [\n'
            '      { starts_with = "\\u200b", fg = "#df8e1d" } ] },\n   { token = "$track", fg = "#9ca0b0" }],\n]\n'
            'spaces = [["$owner"]]\n')
@@ -830,11 +830,12 @@ class ExtraRows(LayoutBase):
         self.write(self.ORIG)
         self.assertEqual(layout.install(), 0)
         sb = self.parsed()
-        self.assertEqual(sb["agents"]["rows"][-1], [{"token": "$bar", "fg": "#4c4f69", "rules": [
+        self.assertEqual(sb["agents"]["rows"][-2], [{"token": "$bar", "fg": "#4c4f69", "rules": [
             {"starts_with": "\u200b", "fg": "#df8e1d"}]}, {"token": "$track", "fg": "#9ca0b0"}])
         self.assertEqual(len(sb["agents"]["rows"]), 6)
         self.assertEqual(sb["spaces"]["rows"][-1], ["$owner"])
         self.assertEqual(sb["agents"]["rows"][0][0]["token"], "$icon")  # covr's rows come first
+        self.assertEqual(sb["agents"]["rows"][-1], [{"token": "$rule", "fg": "#bcc0cc"}])  # the group rule stays last
         self.assertIn('"\\u200b"', self.read())  # invisible characters stay visible as escapes
         once = self.read()
         self.assertEqual(layout.install(), 0)
@@ -847,7 +848,7 @@ class ExtraRows(LayoutBase):
         self.rows_file(self.BAR)
         self.write(self.ORIG.replace("catppuccin-latte", "tokyo-night"))
         self.assertEqual(layout.install(), 0)
-        self.assertEqual(self.parsed()["agents"]["rows"][-1][1], {"token": "$track", "fg": "#9ca0b0"})
+        self.assertEqual(self.parsed()["agents"]["rows"][-2][1], {"token": "$track", "fg": "#9ca0b0"})
 
     def test_bad_rows_are_refused_and_nothing_is_written(self):
         self.needs_tomllib()
