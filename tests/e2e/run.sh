@@ -240,6 +240,9 @@ EOF
 }
 
 t_rows() {    # G7b: your rows from rows.toml join the layout, herdr accepts it, and their tokens render
+  if ! sb 'python3 -c "import tomllib"' 2>/dev/null; then   # rows.toml needs 3.11+ (macOS ships 3.9)
+    echo "SKIP rows — the plugin's python3 has no tomllib"; return
+  fi
   fresh
   local cdir="$B/home/.config/herdr/plugins/config/covr.sidebar"
   mkdir -p "$cdir"
