@@ -1516,15 +1516,22 @@ class AgentLine(Base):
     def test_line_leaves_room_for_your_tokens(self):
         if covrd.tomllib is None:
             self.skipTest("needs tomllib (Python 3.11+)")
-        h = FakeHerdr([agent("p1", "w1", "idle", kind="claude")], [space("w1", "web", 1)])
-        memo = lambda: {"since": {"p1": {"seq": 1, "since": time.time() - 300, "st": "idle"}}}  # noqa: E731 (an age: padded)
+        flagged, plain = agent("p1", "w1", "idle", kind="claude"), agent("p2", "w1", "idle", kind="claude")
+        flagged["tokens"] = {"flag": "!"}
+        plain["tokens"] = {"flag": "", "other": "x"}
+        h = FakeHerdr([flagged, plain], [space("w1", "web", 1)])
+        since = {"seq": 1, "since": time.time() - 300, "st": "idle"}
+        memo = lambda: {"since": {"p1": dict(since), "p2": dict(since)}}  # noqa: E731 (an age: padded)
         before, *_ = self.run_compute(h, opt=opts(kind_icon="right"), memo=memo())
         with open(covrd.ROWS, "w") as f:
-            f.write('agent_line = { tokens = ["$flag"], width = 2 }\n')
+            f.write('agent_line = { tokens = [{ token = "$flag", bold = true }], width = 2 }\n')
+        self.assertEqual(covrd.agent_line(), (("flag",), 5))
         self.assertEqual(covrd.line_reserve(), 5)
         after, *_ = self.run_compute(h, opt=opts(kind_icon="right"), memo=memo())
         self.assertTrue(after["p1"]["head"].endswith(" 5m"))
         self.assertEqual(covrd.cells(before["p1"]["head"]) - covrd.cells(after["p1"]["head"]), 5)
+        # an agent whose flag is empty keeps the full width: herdr draws nothing there
+        self.assertEqual(covrd.cells(before["p2"]["head"]), covrd.cells(after["p2"]["head"]))
 
     def test_no_or_broken_file_reserves_nothing(self):
         self.assertEqual(covrd.line_reserve(), 0)

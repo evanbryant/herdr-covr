@@ -370,19 +370,29 @@ ROWS = os.path.join(CFG_DIR, "rows.toml")  # your rows; install-layout reads it 
 LINE_MAX = 20  # cells rows.toml's agent_line may reserve
 
 
-def line_reserve():
-    """Cells to leave free at the end of each agent line for rows.toml's agent_line tokens: their `width` plus
-    herdr's " · " before each. 0 without an agent_line, or when the file can't be read."""
+def agent_line():
+    """rows.toml's agent_line as (token names without the $, cells): the cells are the tokens' `width` plus
+    herdr's " · " before each. ((), 0) without an agent_line, or when the file can't be read."""
     if tomllib is None:
-        return 0
+        return (), 0
     try:
         line = tomllib.loads(read_text(ROWS, "") or "").get("agent_line")
         toks, w = line.get("tokens"), line.get("width")
     except Exception:
-        return 0
+        return (), 0
     if isinstance(toks, list) and toks and isinstance(w, int) and not isinstance(w, bool) and 0 < w <= LINE_MAX:
-        return w + 3 * len(toks)
-    return 0
+        names = [t.get("token") if isinstance(t, dict) else t for t in toks]
+        return tuple(n.lstrip("$") for n in names if isinstance(n, str)), w + 3 * len(toks)
+    return (), 0
+
+
+def line_reserve(tokens=None, line=None):
+    """Cells to leave free at the end of an agent's line for rows.toml's agent_line tokens. herdr drops an empty
+    token and its " · ", so an agent whose `tokens` hold none of them keeps its whole line (None = reserve anyway)."""
+    names, n = line or agent_line()
+    if tokens is not None and not any(str(tokens.get(k) or "").strip() for k in names):
+        return 0
+    return n
 
 
 def read_options():
@@ -948,7 +958,7 @@ def compute(opt, memo):
         ws = spaces.get(a["workspace_id"], {})
         rows.append(dict(pid=pid, st=st, stale=stale, age=age, seq=seq, kind=a.get("agent") or "?",
                          space=ws.get("label", a["workspace_id"]), wsid=a["workspace_id"],
-                         title=(a.get("terminal_title_stripped") or "").strip(),
+                         title=(a.get("terminal_title_stripped") or "").strip(), tokens=a.get("tokens") or {},
                          tab=tab_label(tabs.get(a.get("tab_id"), ""), opt["show_tab"])))
     for pid in list(seen):
         if pid not in {r["pid"] for r in rows}:
@@ -970,7 +980,7 @@ def compute(opt, memo):
         memo["manual"] = [w for w in memo["manual"] if w in spaces]
 
     width = sidebar_width()
-    reserve = line_reserve()
+    line = agent_line()
     pins = prune_pins(load_pins(), {r["pid"] for r in rows}, set(spaces), memo, now)
     kinds = {r["kind"] for r in rows}
     show_kind = opt["show_kind"] == "always" or (opt["show_kind"] == "auto" and len(kinds) > 1)
@@ -1055,7 +1065,7 @@ def compute(opt, memo):
             # rows dim it like the rest (two) — see the layouts' rules
             quiet = 2 if r["stale"] else 1 if r["st"] == "unknown" else 0
             t["icon" if where == "left" else "icon_r"] = ZW * quiet + icon
-        t["head"] = pinned_row(glyph, body, fmt_age(r["age"]), width - (4 if where in ("left", "right") else 0) - reserve,
+        t["head"] = pinned_row(glyph, body, fmt_age(r["age"]), width - (4 if where in ("left", "right") else 0) - line_reserve(r["tokens"], line),
                                " ★" if r["pinned"] else "")
         if r["pinned"]:
             t["pin"] = "0"
